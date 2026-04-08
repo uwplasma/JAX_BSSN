@@ -1,2 +1,0 @@
-[console_scripts]
-JAX_BSSN = JAX_BSSN.__main__:main
