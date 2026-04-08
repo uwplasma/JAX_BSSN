@@ -8,6 +8,7 @@ The BSSN variables are:
 - traceless extrinsic curvature A_ij
 - trace of extrinsic curvature K
 - conformal connection functions Γ^i
+- NEW: mass density ρ
 
 All evolution equations are JIT-compiled with JAX for performance.
 """
@@ -40,6 +41,7 @@ class BSSNVariables(NamedTuple):
     conformal_connection: jnp.ndarray  # Γ^i (3-vector)
     lapse: jnp.ndarray                # α (scalar)
     shift: jnp.ndarray                # β^i (3-vector)
+    rho: jnp.ndarray                  # ρ (spherical mass density)
 
 
 class BSSNParameters(NamedTuple):
@@ -153,6 +155,7 @@ def compute_ricci(vars: BSSNVariables,
     K = vars.trace_K
     A_ij = vars.traceless_K
     W    = vars.conformal_factor
+    rho = vars.rho
     shape = conformal_metric.shape[2:]
 
     metric_derivs = jnp.stack( [diff1_field(conformal_metric, d+2, dx) for d in range(3)], axis=0) 
@@ -218,7 +221,10 @@ def compute_ricci(vars: BSSNVariables,
     third_term = -2 * jnp.einsum('ij...,mn...,m...,n...->ij...', conformal_metric, inv_conformal_metric, dWdi, dWdi) / jnp.power(W, 2)
     # third term
 
-    R_ij_W = first_term + second_term + third_term
+    fourth_term = 4*jnp.pi * alpha * rho
+    # NEW fourth term
+
+    R_ij_W = first_term + second_term + third_term + fourth_term
     # conformal factor contribution to Ricci tensor
 
     R_ij = conformal_ricci + R_ij_W
@@ -289,6 +295,14 @@ def evolve_conformal_factor(vars: BSSNVariables,
     return dt_W + dissipation_term
 
 @jit
+def generate_stress_energy_tensor(vars: BSSNVariables,
+                                params: BSSNParameters) -> jnp.ndarray:
+    rho = vars.rho
+    T = jnp.zeros((4, 4) + rho.shape)  # 4D array
+    T = T.at[0, 0].set(rho)  # T_00 is mass density
+    return T
+
+@jit
 def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
                                     params: BSSNParameters) -> jnp.ndarray:
     """
@@ -311,6 +325,7 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     W    = vars.conformal_factor
     gamma = vars.conformal_metric
     inv_gamma = invert_3x3_metric(gamma)
+    rho = vars.rho
 
 
     dalphadi = jnp.stack( [diff1_field(alpha, d, dx) for d in range(3)], axis=0)
@@ -343,7 +358,18 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     third_term = alpha * K**2 / 3.0
     # third term
 
-    dt_K = first_term + second_term + third_term
+    # NEW fourth term from matter sources
+    T = generate_stress_energy_tensor(vars, params)
+    S_ij = jnp.einsum('ik...,jl...,kl...->ij...',
+                   vars.conformal_metric,
+                   vars.conformal_metric,
+                   T[1:4, 1:4, ...])
+    S = jnp.einsum('ij...,ij...->...', inv_gamma, S_ij)
+
+    fourth_term = 4 * jnp.pi * alpha * (rho + S)
+    # NEW fourth term
+
+    dt_K = first_term + second_term + third_term + fourth_term
     # compute dt_K
 
     dK_dx1 = diff6_field(vars.trace_K, 0, params.dx)
@@ -613,3 +639,24 @@ def evolve_shift(vars: BSSNVariables, params: BSSNParameters) -> jnp.ndarray:
     dt_beta = 0.0 * vars.conformal_connection  # Placeholder for no evolution
     
     return dt_beta
+
+
+@jit
+def evolve_rho(vars: BSSNVariables, params: BSSNParameters) -> jnp.ndarray:
+    """
+    Evolve mass density ρ.
+    
+    For now, assume static mass distribution (no time evolution).
+    Can be extended to include continuity equation if needed.
+    
+    Args:
+        vars: Current BSSN variables
+        params: Evolution parameters
+        
+    Returns:
+        Time derivative of mass density (zero for static case)
+    """
+    # Static configuration: rho does not evolve
+    dt_rho = 0.0 * vars.rho
+    
+    return dt_rho
