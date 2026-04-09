@@ -34,9 +34,8 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
     dt_Gamma = evolve_conformal_connection(vars, params)
     dt_alpha = evolve_lapse(vars, params)
     dt_beta = evolve_shift(vars, params)
-    dt_rho = evolve_rho(vars, params) # NEW
 
-    k1 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta, dt_rho]
+    k1 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta]
 
     # k2 - midpoint with k1
     mid_vars = BSSNVariables(
@@ -47,7 +46,7 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         conformal_connection=vars.conformal_connection + 0.5 * dt * k1[4],
         lapse=vars.lapse + 0.5 * dt * k1[5],
         shift=vars.shift + 0.5 * dt * k1[6],
-        rho=vars.rho + 0.5 * dt * k1[7] # NEW
+        rho=vars.rho
     )
 
     # k2 time derivatives
@@ -58,9 +57,8 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
     dt_Gamma = evolve_conformal_connection(mid_vars, params)
     dt_alpha = evolve_lapse(mid_vars, params)
     dt_beta = evolve_shift(mid_vars, params)
-    dt_rho = evolve_rho(mid_vars, params) # NEW
 
-    k2 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta, dt_rho]
+    k2 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta]
 
     # k3 - midpoint with k2
     mid_vars = BSSNVariables(
@@ -71,7 +69,7 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         conformal_connection=vars.conformal_connection + 0.5 * dt * k2[4],
         lapse=vars.lapse + 0.5 * dt * k2[5],
         shift=vars.shift + 0.5 * dt * k2[6],
-        rho=vars.rho + 0.5 * dt * k2[7] # NEW
+        rho=vars.rho
     )
 
     # k3 time derivatives
@@ -82,9 +80,8 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
     dt_Gamma = evolve_conformal_connection(mid_vars, params)
     dt_alpha = evolve_lapse(mid_vars, params)
     dt_beta = evolve_shift(mid_vars, params)
-    dt_rho = evolve_rho(mid_vars, params) # NEW
 
-    k3 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta, dt_rho]
+    k3 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta]
 
     # k4 - endpoint with k3
     end_vars = BSSNVariables(
@@ -95,7 +92,7 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         conformal_connection=vars.conformal_connection + dt * k3[4],
         lapse=vars.lapse + dt * k3[5],
         shift=vars.shift + dt * k3[6],
-        rho=vars.rho + dt * k3[7] # NEW
+        rho=vars.rho
     )
 
     # k4 time derivatives
@@ -106,9 +103,8 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
     dt_Gamma = evolve_conformal_connection(end_vars, params)
     dt_alpha = evolve_lapse(end_vars, params)
     dt_beta = evolve_shift(end_vars, params)
-    dt_rho = evolve_rho(end_vars, params) # NEW
 
-    k4 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta, dt_rho]
+    k4 = [dt_gamma, dt_W, dt_A, dt_K, dt_Gamma, dt_alpha, dt_beta]
 
     # Final RK4 update
     new_vars = BSSNVariables(
@@ -119,7 +115,7 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         conformal_connection=vars.conformal_connection + (dt / 6.0) * (k1[4] + 2 * k2[4] + 2 * k3[4] + k4[4]),
         lapse=vars.lapse + (dt / 6.0) * (k1[5] + 2 * k2[5] + 2 * k3[5] + k4[5]),
         shift=vars.shift + (dt / 6.0) * (k1[6] + 2 * k2[6] + 2 * k3[6] + k4[6]),
-        rho=vars.rho + (dt / 6.0) * (k1[7] + 2 * k2[7] + 2 * k3[7] + k4[7]) # NEW
+        rho=vars.rho
     )
 
     return new_vars

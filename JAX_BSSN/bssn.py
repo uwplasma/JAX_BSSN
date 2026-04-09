@@ -221,10 +221,7 @@ def compute_ricci(vars: BSSNVariables,
     third_term = -2 * jnp.einsum('ij...,mn...,m...,n...->ij...', conformal_metric, inv_conformal_metric, dWdi, dWdi) / jnp.power(W, 2)
     # third term
 
-    fourth_term = 4*jnp.pi * alpha * rho
-    # NEW fourth term
-
-    R_ij_W = first_term + second_term + third_term + fourth_term
+    R_ij_W = first_term + second_term + third_term
     # conformal factor contribution to Ricci tensor
 
     R_ij = conformal_ricci + R_ij_W
@@ -358,15 +355,7 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     third_term = alpha * K**2 / 3.0
     # third term
 
-    # NEW fourth term from matter sources
-    T = generate_stress_energy_tensor(vars, params)
-    S_ij = jnp.einsum('ik...,jl...,kl...->ij...',
-                   vars.conformal_metric,
-                   vars.conformal_metric,
-                   T[1:4, 1:4, ...])
-    S = jnp.einsum('ij...,ij...->...', inv_gamma, S_ij)
-
-    fourth_term = 4 * jnp.pi * alpha * (rho + S)
+    fourth_term = 4 * jnp.pi * alpha * rho
     # NEW fourth term
 
     dt_K = first_term + second_term + third_term + fourth_term
