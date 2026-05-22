@@ -34,9 +34,10 @@ Params:
 def run_static_mass(R_sphere, rho_geom, nx, nz, L, dt_factor, Nt, snapshot_stride, rho_field_fn,
                     show_progress=True):
     dx = L / nx
+    dz = L / nz
     dt = dt_factor * dx
     coords_x = -L/2 + (jnp.arange(nx) + 0.5) * dx  # cell-centred x
-    coords_z = -L/2 + (jnp.arange(nz) + 0.5) * dx  # cell-centred z
+    coords_z = -L/2 + (jnp.arange(nz) + 0.5) * dz  # cell-centred z
 
     # Build the density on this grid via the user-supplied function
     rho_field = rho_field_fn(coords_x, coords_z, R_sphere, rho_geom)
@@ -45,10 +46,18 @@ def run_static_mass(R_sphere, rho_geom, nx, nz, L, dt_factor, Nt, snapshot_strid
     r3d = jnp.sqrt(x3d**2 + y3d**2 + z3d**2)
     r3d = jnp.maximum(r3d, 1e-30)
 
-    # Flat-space BSSN initial data
-    alpha = jnp.ones((nx, nx, nz))
-    beta  = jnp.zeros((3, nx, nx, nz))
-    conformal_factor = jnp.ones((nx, nx, nz))
+    # Weak-field initial data from the Newtonian potential
+    M_geom = (4.0/3.0) * jnp.pi * R_sphere**3 * rho_geom
+
+    def newtonian_potential(r, M, R):
+        inside  = -M / (2.0 * R) * (3.0 - r**2 / R**2)
+        outside = -M / r
+        return jnp.where(r <= R, inside, outside)
+
+    Phi = newtonian_potential(r3d, M_geom, R_sphere)
+    alpha = 1.0 + Phi
+    beta = jnp.zeros((3, nx, nx, nz))
+    conformal_factor = 1.0 + Phi
 
     gamma = jnp.zeros((3, 3, nx, nx, nz))
     gamma = gamma.at[0, 0].set(1.0)
@@ -155,8 +164,8 @@ if __name__ == "__main__":
     print(f'Phi/c^2 at surface ~ GM/(c^2 R) = {float(G_over_c2_m * M_sphere / R_sphere):.4e}')
 
     # Run the static-mass evolution
-    L_domain = 10.0 * R_sphere    # ~25.5 million meters
-    nx_mass  = 64                 
+    L_domain = 20.0 * R_sphere    # larger domain for weaker periodic-image influence
+    nx_mass  = 128                # finer 2D grid for the sphere
     nz_mass  = 1                  # Single z-slice for 2D
     dt_fac   = 0.1                # CFL factor
     Nt_mass  = 2000               # 2*10^3 timesteps

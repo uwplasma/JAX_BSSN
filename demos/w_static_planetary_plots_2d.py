@@ -20,13 +20,13 @@ def newtonian_potential_f64(r, M, R):
     outside = -M / r
     return jnp.where(r <= R, inside, outside)
 
-# Keep calculations in meters (simulation units)
+# Keep calculations in Mm (simulation units)
 M_geom_sphere_f64 = (4.0/3.0) * jnp.pi * R_sphere**3 * rho_geom
 r_ref = jnp.linspace(0.01, 2.0 * R_sphere, 500)
 Phi_ref_f64 = newtonian_potential_f64(r_ref, M_geom_sphere_f64, R_sphere)
 alpha_dev_newton = Phi_ref_f64   
 
-# BSSN radial lapse profile processing (keep in meters)
+# BSSN radial lapse profile processing (keep in Mm)
 alpha_final = jnp.asarray(lapse_snaps[-1], dtype=jnp.float64)
 r_flat = jnp.asarray(r3d_mass).ravel()
 a_flat = alpha_final.ravel()
@@ -44,7 +44,7 @@ bssn_dev = alpha_radial - 1.0
 # ---- Plots ----
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Left: lapse deviation (alpha - 1) - convert to meters for display
+# Left: lapse deviation (alpha - 1)
 axes[0].plot(r_ref, alpha_dev_newton, 'k--', lw=2,
              label=r'Newtonian $\Phi(r)$')
 axes[0].plot(r_centers, bssn_dev, 'o-', ms=4, lw=1.2,

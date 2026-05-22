@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
     # Run the static-mass evolution
     L_domain = 10.0 * R_sphere    # ~25.5 million meters
-    nx_mass  = 64                 
+    nx_mass  = 128                 
     dt_fac   = 0.1                # CFL factor
     Nt_mass  = 2000               # 2*10^3 timesteps
     snap_stride = 100
