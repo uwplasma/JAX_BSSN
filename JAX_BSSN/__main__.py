@@ -176,7 +176,8 @@ def main():
 
 
 if __name__ == "__main__":
-    jax.config.update("jax_enable_x64", True)
+    from JAX_BSSN import setup_jax_config
+    setup_jax_config(enable_x64=True, verbose=True)
 
     final_vars, constraint_history = main()
 

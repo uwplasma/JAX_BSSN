@@ -409,7 +409,8 @@ class TestRK4Evolution(unittest.TestCase):
 
 if __name__ == '__main__':
     # Configure JAX for testing
-    jax.config.update("jax_enable_x64", True)  # Use double precision
+    from JAX_BSSN import setup_jax_config
+    setup_jax_config(enable_x64=True, verbose=True)
     
     unittest.main(verbosity=2)
 
