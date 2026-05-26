@@ -343,14 +343,10 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     third_term = alpha * K**2 / 3.0
     # third term
 
-<<<<<<< HEAD
     fourth_term = 4 * jnp.pi * alpha * rho
     # NEW fourth term
 
     dt_K = first_term + second_term + third_term + fourth_term
-=======
-    dt_K = first_term + second_term + third_term
->>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     # compute dt_K
 
     dK_dx1 = diff6_field(vars.trace_K, 0, params.dx)

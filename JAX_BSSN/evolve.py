@@ -45,12 +45,8 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         trace_K=vars.trace_K + 0.5 * dt * k1[3],
         conformal_connection=vars.conformal_connection + 0.5 * dt * k1[4],
         lapse=vars.lapse + 0.5 * dt * k1[5],
-<<<<<<< HEAD
         shift=vars.shift + 0.5 * dt * k1[6],
         rho=vars.rho
-=======
-        shift=vars.shift + 0.5 * dt * k1[6]
->>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     )
 
     # k2 time derivatives
