@@ -2,7 +2,7 @@ from JAX_BSSN.bssn import (
     BSSNVariables, BSSNParameters, 
     evolve_conformal_metric, evolve_conformal_factor,
     evolve_traceless_extrinsic_curvature, evolve_trace_extrinsic_curvature,
-    evolve_conformal_connection, evolve_lapse, evolve_shift, evolve_rho
+    evolve_conformal_connection, evolve_lapse, evolve_shift
 )
 from jax import jit
 import jax
@@ -45,8 +45,12 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         trace_K=vars.trace_K + 0.5 * dt * k1[3],
         conformal_connection=vars.conformal_connection + 0.5 * dt * k1[4],
         lapse=vars.lapse + 0.5 * dt * k1[5],
+<<<<<<< HEAD
         shift=vars.shift + 0.5 * dt * k1[6],
         rho=vars.rho
+=======
+        shift=vars.shift + 0.5 * dt * k1[6]
+>>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     )
 
     # k2 time derivatives
@@ -68,8 +72,12 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         trace_K=vars.trace_K + 0.5 * dt * k2[3],
         conformal_connection=vars.conformal_connection + 0.5 * dt * k2[4],
         lapse=vars.lapse + 0.5 * dt * k2[5],
+<<<<<<< HEAD
         shift=vars.shift + 0.5 * dt * k2[6],
         rho=vars.rho
+=======
+        shift=vars.shift + 0.5 * dt * k2[6]
+>>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     )
 
     # k3 time derivatives
@@ -91,8 +99,12 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         trace_K=vars.trace_K + dt * k3[3],
         conformal_connection=vars.conformal_connection + dt * k3[4],
         lapse=vars.lapse + dt * k3[5],
+<<<<<<< HEAD
         shift=vars.shift + dt * k3[6],
         rho=vars.rho
+=======
+        shift=vars.shift + dt * k3[6]
+>>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     )
 
     # k4 time derivatives
@@ -114,8 +126,12 @@ def rk4_step(vars: BSSNVariables, params: BSSNParameters) -> BSSNVariables:
         trace_K=vars.trace_K + (dt / 6.0) * (k1[3] + 2 * k2[3] + 2 * k3[3] + k4[3]),
         conformal_connection=vars.conformal_connection + (dt / 6.0) * (k1[4] + 2 * k2[4] + 2 * k3[4] + k4[4]),
         lapse=vars.lapse + (dt / 6.0) * (k1[5] + 2 * k2[5] + 2 * k3[5] + k4[5]),
+<<<<<<< HEAD
         shift=vars.shift + (dt / 6.0) * (k1[6] + 2 * k2[6] + 2 * k3[6] + k4[6]),
         rho=vars.rho
+=======
+        shift=vars.shift + (dt / 6.0) * (k1[6] + 2 * k2[6] + 2 * k3[6] + k4[6])
+>>>>>>> 2d4eadf470eb5bb331e6039c60acd374cfcfa071
     )
 
     return new_vars
