@@ -40,6 +40,7 @@ class BSSNVariables(NamedTuple):
     conformal_connection: jnp.ndarray  # Γ^i (3-vector)
     lapse: jnp.ndarray                # α (scalar)
     shift: jnp.ndarray                # β^i (3-vector)
+    rho: jnp.ndarray = 0.0            # Energy density ρ = n_a n_b T^{ab} (defaults to 0)
 
 
 class BSSNParameters(NamedTuple):
@@ -343,7 +344,7 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     third_term = alpha * K**2 / 3.0
     # third term
 
-    fourth_term = 4 * jnp.pi * alpha * rho
+    fourth_term = 4 * jnp.pi * alpha * vars.rho
     # NEW fourth term
 
     dt_K = first_term + second_term + third_term + fourth_term
