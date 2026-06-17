@@ -41,6 +41,8 @@ class BSSNVariables(NamedTuple):
     lapse: jnp.ndarray                # α (scalar)
     shift: jnp.ndarray                # β^i (3-vector)
     rho: jnp.ndarray = 0.0            # Energy density ρ = n_a n_b T^{ab} (defaults to 0)
+    S_ij: jnp.ndarray = jnp.zeros((3, 3, 1, 1, 1))           # Stress tensor S_ij (3x3 symmetric)
+    momentum_density: jnp.ndarray = jnp.zeros((3, 1, 1, 1))  # Momentum density J^i
 
 
 class BSSNParameters(NamedTuple):
@@ -128,6 +130,56 @@ def compute_physical_metric(conformal_metric: jnp.ndarray,
     # compute physical metric by scaling conformal metric with W^-2
     
     return physical_metric
+
+@jit
+def compute_em_sources(conformal_metric: jnp.ndarray,
+                        conformal_factor: jnp.ndarray,
+                        E_flat: jnp.ndarray,
+                        B_flat: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute electromagnetic energy density and stress tensor.
+
+    Args:
+        conformal_metric: Conformal metric γ_ij with shape (3,3,ni,nj,nk)
+        conformal_factor: Conformal factor W with shape (ni,nj,nk)
+        E_flat: Electric field with lowered physical indices E_i (3,ni,nj,nk)
+        B_flat: Magnetic field with lowered physical indices B_i (3,ni,nj,nk)
+
+    Returns:
+        rho: Energy density field
+        S_ij: Physical stress tensor with lowered indices
+    """
+    physical_metric = compute_physical_metric(conformal_metric, conformal_factor)
+    inv_physical_metric = invert_3x3_metric(physical_metric)
+
+    E_raised = jnp.einsum('ij...,j...->i...', inv_physical_metric, E_flat)
+    B_raised = jnp.einsum('ij...,j...->i...', inv_physical_metric, B_flat)
+
+    E_sq = jnp.einsum('i...,i...->...', E_raised, E_flat)
+    B_sq = jnp.einsum('i...,i...->...', B_raised, B_flat)
+
+    rho = (E_sq + B_sq) / (8.0 * jnp.pi)
+
+    stress_part = -jnp.einsum('i...,j...->ij...', E_flat, E_flat) - jnp.einsum('i...,j...->ij...', B_flat, B_flat)
+    trace_part = 0.5 * physical_metric * (E_sq + B_sq)
+    S_ij = (stress_part + trace_part) / (4.0 * jnp.pi)
+
+    return rho, S_ij
+
+
+@jit
+def compute_em_momentum_density(conformal_metric: jnp.ndarray,
+                                 conformal_factor: jnp.ndarray,
+                                 E_flat: jnp.ndarray,
+                                 B_flat: jnp.ndarray) -> jnp.ndarray:
+    """Compute electromagnetic momentum density J^i (Poynting vector)."""
+    physical_metric = compute_physical_metric(conformal_metric, conformal_factor)
+    inv_physical_metric = invert_3x3_metric(physical_metric)
+
+    J_flat = jnp.cross(E_flat, B_flat, axis=0) / (4.0 * jnp.pi)
+    J_raised = jnp.einsum('ij...,j...->i...', inv_physical_metric, J_flat)
+
+    return J_raised
+
 
 @jit
 def compute_ricci(vars: BSSNVariables,
@@ -344,8 +396,11 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     third_term = alpha * K**2 / 3.0
     # third term
 
-    fourth_term = 4 * jnp.pi * alpha * vars.rho
-    # NEW fourth term
+    physical_metric = compute_physical_metric(gamma, W)
+    inv_physical_metric = invert_3x3_metric(physical_metric)
+    S = jnp.einsum('ij...,ij...->...', inv_physical_metric, vars.S_ij)
+
+    fourth_term = 4 * jnp.pi * alpha * (vars.rho + S)
 
     dt_K = first_term + second_term + third_term + fourth_term
     # compute dt_K
@@ -465,7 +520,8 @@ def evolve_traceless_extrinsic_curvature(vars: BSSNVariables,
     ricci = compute_ricci(vars, params)
 
 
-    third_term = jnp.power(W, 2) * (alpha * ricci - DiDj_alpha)
+    em_stress_term = -8.0 * jnp.pi * alpha * vars.S_ij
+    third_term = jnp.power(W, 2) * (alpha * ricci - DiDj_alpha) + em_stress_term
     third_term = traceless_part(third_term, vars.conformal_metric, inv_gamma)
     # third term
 
@@ -555,7 +611,9 @@ def evolve_conformal_connection(vars: BSSNVariables,
     fourth_term = -2 * jnp.einsum('ij...,j...->i...', A_ij_raised, dalphadi)
     # fourth term
 
-    dt_Gamma = first_term + second_term + third_term + fourth_term
+    fifth_term = -16.0 * jnp.pi * alpha * vars.momentum_density
+
+    dt_Gamma = first_term + second_term + third_term + fourth_term + fifth_term
     # compute dt_Gamma
 
     dGamma_dx1 = diff6_field(vars.conformal_connection, 1, params.dx)

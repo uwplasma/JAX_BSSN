@@ -13,16 +13,19 @@ from jax import jit
 import jax
 import sys
 import os
+from pathlib import Path
 
 # Add the project root to the Python path
-sys.path.append('/home/christopherwoolford/Documents/Research/Numerical_Relativity/JAX_BSSN')
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
 
 from JAX_BSSN.evolve import rk4_step
 from JAX_BSSN.bssn import (
     BSSNVariables, BSSNParameters,
     evolve_conformal_metric, evolve_conformal_factor,
     evolve_traceless_extrinsic_curvature, evolve_trace_extrinsic_curvature,
-    evolve_conformal_connection, evolve_lapse, evolve_shift
+    evolve_conformal_connection, evolve_lapse, evolve_shift,
+    compute_em_sources,
 )
 
 
@@ -215,6 +218,26 @@ class TestRK4Evolution(unittest.TestCase):
         except Exception as e:
             self.fail(f"RK4 step structure test failed: {e}")
     
+    def test_em_source_construction(self):
+        """Test that electromagnetic source tensors can be constructed."""
+        n = 8
+        x = jnp.linspace(-1.0, 1.0, n)
+        X, Y, Z = jnp.meshgrid(x, x, x, indexing='ij')
+        r = jnp.sqrt(X**2 + Y**2 + Z**2) + 1e-3
+        Q = 1.0
+        E_flat = jnp.stack([Q * X / r**3, Q * Y / r**3, Q * Z / r**3], axis=0)
+        B_flat = jnp.zeros_like(E_flat)
+
+        conformal_metric = jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3, n, n, n))
+        conformal_factor = jnp.ones((n, n, n))
+
+        rho, S_ij = compute_em_sources(conformal_metric, conformal_factor, E_flat, B_flat)
+
+        self.assertEqual(rho.shape, (n, n, n))
+        self.assertEqual(S_ij.shape, (3, 3, n, n, n))
+        self.assertTrue(jnp.all(rho >= 0.0))
+        self.assertTrue(jnp.all(jnp.isfinite(S_ij)))
+
     def test_bssn_manufactured_solution_consistency(self):
         """
         Test manufactured solutions with BSSN evolution using finite differences.

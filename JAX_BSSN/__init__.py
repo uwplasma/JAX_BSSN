@@ -29,9 +29,9 @@ def setup_jax_config(enable_x64=True, verbose=True):
         print(f"JAX backend: {backend}")
         print(f"JAX devices available: {device_names}")
         if 'gpu' in backend.lower() or any('GPU' in name for name in device_names):
-            print("✓ GPU acceleration enabled")
+            print("GPU acceleration enabled")
         else:
-            print("⚠ Using CPU (no GPU detected)")
+            print("WARNING: Using CPU (no GPU detected)")
 
 
 from . import bssn
