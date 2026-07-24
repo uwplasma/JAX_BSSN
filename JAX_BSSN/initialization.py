@@ -1,8 +1,8 @@
 """
 Initial data setup for numerical relativity simulations.
 
-This module provides initial data for gauge-wave, linear-wave, and Gowdy-wave spacetimes
-using the harmonic gauge with zero shift.
+This module provides analytic initial data for wave tests, static matter tests,
+and puncture black holes in the BSSN variables used by this codebase.
 """
 
 from typing import Tuple
@@ -313,6 +313,70 @@ def linear_wave_data(
     )
 
 
+def puncture_black_hole_data(
+    ni: int,
+    nj: int,
+    nk: int,
+    dx: float,
+    mass: float = 1.0,
+    lapse_puncture: bool = True,
+    center_between_points: bool = True,
+    min_radius: float | None = None,
+) -> BSSNVariables:
+    """
+    Initialize isotropic puncture black hole data.
+
+    The physical 3-metric is
+
+        g_ij = psi^4 delta_ij,  psi = 1 + M / (2 r),
+
+    while the BSSN conformal metric is flat and the code's conformal factor is
+
+        W = psi^-2 = (1 + M / (2 r))^-2.
+
+    Following the working puncture setup described upstream, the initial lapse is
+    also given a puncture profile alpha = W.  The extrinsic curvature, trace K,
+    conformal connection, and shift are all initially zero.
+    """
+    shape = (ni, nj, nk)
+    X, Y, Z = create_coordinate_arrays(ni, nj, nk, dx)
+
+    if center_between_points:
+        if ni % 2 == 1:
+            X = X + 0.5 * dx
+        if nj % 2 == 1:
+            Y = Y + 0.5 * dx
+        if nk % 2 == 1:
+            Z = Z + 0.5 * dx
+
+    r = jnp.sqrt(X**2 + Y**2 + Z**2)
+    r_floor = 0.5 * dx if min_radius is None else min_radius
+    r_safe = jnp.maximum(r, r_floor)
+
+    psi = 1.0 + mass / (2.0 * r_safe)
+    conformal_factor = psi ** (-2.0)
+    lapse = conformal_factor if lapse_puncture else jnp.ones(shape)
+    shift = jnp.zeros((3,) + shape)
+
+    conformal_metric = (
+        jnp.eye(3, dtype=conformal_factor.dtype)[:, :, None, None, None]
+        * jnp.ones((3, 3) + shape, dtype=conformal_factor.dtype)
+    )
+    traceless_K = jnp.zeros_like(conformal_metric)
+    trace_K = jnp.zeros(shape, dtype=conformal_factor.dtype)
+    conformal_connection = jnp.zeros((3,) + shape, dtype=conformal_factor.dtype)
+
+    return BSSNVariables(
+        conformal_metric=conformal_metric,
+        conformal_factor=conformal_factor,
+        traceless_K=traceless_K,
+        trace_K=trace_K,
+        conformal_connection=conformal_connection,
+        lapse=lapse,
+        shift=shift,
+    )
+
+
 def get_initial_data(
     data_type: str, ni: int, nj: int, nk: int, dx: float, **kwargs
 ) -> BSSNVariables:
@@ -320,7 +384,7 @@ def get_initial_data(
     Get initial data of specified type.
 
     Args:
-        data_type: Type of initial data ('gauge_wave', 'gowdy_wave', 'linear_wave')
+        data_type: Type of initial data ('gauge_wave', 'gowdy_wave', 'linear_wave', 'puncture_black_hole')
         ni, nj, nk: Grid dimensions
         dx: Grid spacing
         **kwargs: Additional parameters for specific data types
@@ -334,6 +398,8 @@ def get_initial_data(
         return gowdy_wave_data(ni, nj, nk, dx, **kwargs)
     if data_type in {"linear_wave", "linear"}:
         return linear_wave_data(ni, nj, nk, dx, **kwargs)
+    if data_type in {"puncture_black_hole", "puncture", "black_hole"}:
+        return puncture_black_hole_data(ni, nj, nk, dx, **kwargs)
 
     raise ValueError(f"Unknown initial data type: {data_type}")
 

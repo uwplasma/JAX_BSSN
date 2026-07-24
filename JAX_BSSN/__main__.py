@@ -40,7 +40,7 @@ def run_simulation(
     Run numerical relativity simulation.
 
     Args:
-        initial_data_type: Type of initial data ('gauge_wave', 'gowdy_wave', 'linear_wave')
+        initial_data_type: Type of initial data ('gauge_wave', 'gowdy_wave', 'linear_wave', 'puncture_black_hole')
         grid_size: Grid size (cubic grid)
         final_time: Final simulation time
         plot_interval: Time interval for plotting
@@ -70,6 +70,27 @@ def run_simulation(
             dx=dx,
             dt=dt,
         )
+    elif initial_data_type == "puncture_black_hole":
+        dt = dx / 4.0
+        bssn_params = BSSNParameters(
+            eta=2.0,
+            kappa=0.0,
+            nu=0.25,
+            g=0.75,
+            dx=dx,
+            dt=dt,
+            zero_shift=0,
+            gauge=1,
+            xl_bc=1,
+            xr_bc=1,
+            yl_bc=1,
+            yr_bc=1,
+            zl_bc=1,
+            zr_bc=1,
+            bc_width=8.0,
+            bc_order=4.0,
+            bc_strength=1.0,
+        )
     else:
         bssn_params = BSSNParameters(
             eta=0.0,
@@ -85,7 +106,22 @@ def run_simulation(
     if verbose:
         print("Initializing data...")
 
-    vars = get_initial_data(initial_data_type, grid_size, grid_size, grid_size, dx)
+    initial_kwargs = {}
+    if initial_data_type == "puncture_black_hole":
+        initial_kwargs = {
+            "mass": 1.0,
+            "lapse_puncture": True,
+            "center_between_points": True,
+        }
+
+    vars = get_initial_data(
+        initial_data_type,
+        grid_size,
+        grid_size,
+        grid_size,
+        dx,
+        **initial_kwargs,
+    )
 
     initial_adm_mass = compute_adm_mass(vars, dx)
     initial_adm_momentum = compute_adm_momentum(vars, dx)
@@ -144,7 +180,7 @@ def main():
     parser.add_argument(
         "--initial-data",
         default="gauge_wave",
-        choices=["gauge_wave", "gowdy_wave", "linear_wave"],
+        choices=["gauge_wave", "gowdy_wave", "linear_wave", "puncture_black_hole"],
         help="Type of initial data",
     )
     parser.add_argument("--grid-size", type=int, default=64, help="Grid size (cubic)")
