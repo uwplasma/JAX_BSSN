@@ -66,7 +66,6 @@ def run_simulation(
             eta=0.0,
             kappa=0.0,
             nu=0.0,
-            f=0.0,
             g=0.0,
             dx=dx,
             dt=dt,
@@ -78,7 +77,6 @@ def run_simulation(
             # momentum constraint damping
             nu=0.25,
             # Kreiss–Oliger dissipation coefficient
-            f=1.0,
             g=0.0,
             dx=dx,
             dt=dt,

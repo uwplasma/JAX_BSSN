@@ -1,9 +1,10 @@
 # JAX-BSSN - Numerical Relativity in Python with JAX
 
 This is a Python/JAX implementation of the NR1 numerical relativity code forked from 20K on Github.
-This code uses the BSSN formulation of the ADM 3+1 decomposition of general relativity. As of right now,
-the evolution equations are limited to the harmonic gauge using the zero shift condition and fully periodic boundary 
-conditions are implemented.
+This code uses the BSSN formulation of the ADM 3+1 decomposition of general relativity. The evolution
+equations support nonzero shift terms with a single-variable Gamma-driver shift gauge, while the included
+wave initial data still default to zero shift. Periodic finite-difference stencils are implemented, with
+optional super-Gaussian boundary filters that damp selected faces toward flat space.
 
 ## Features
 

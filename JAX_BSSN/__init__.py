@@ -35,6 +35,7 @@ def setup_jax_config(enable_x64=True, verbose=True):
 
 
 from . import bssn
+from . import boundaries
 from . import derivatives
 from . import errors
 from . import evolve

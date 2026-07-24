@@ -37,7 +37,6 @@ def setup_simulation_parameters():
     bssn_params = BSSNParameters(
         eta=0.0,
         kappa=0.025,
-        f=1.0,
         g=0.0,
         dx=dx,
         dt=dt,

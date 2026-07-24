@@ -97,8 +97,7 @@ class TestGaugeWave(unittest.TestCase):
 
         params = BSSNParameters(
             eta=0.0,          # Damping parameter for Γ^i evolution
-            kappa = 0.025,    # momentum damping parameter
-            f=1.0,            # Multiple of 1+log slicing
+            kappa = 0.0,      # no momentum damping in the analytic gauge-wave check
             g=0.0,           # Gamma driver shift parameter
             dx=dx,           # Grid spacing
             dt=dt         # Time step
@@ -222,8 +221,7 @@ class TestGaugeWave(unittest.TestCase):
 
             params = BSSNParameters(
                 eta=0.0,          # Damping parameter for Γ^i evolution
-                kappa = 0.025,    # momentum damping parameter
-                f=1.0,            # Multiple of 1+log slicing
+                kappa = 0.0,      # no momentum damping in the analytic gauge-wave check
                 g=0.0,           # Gamma driver shift parameter
                 dx=dx,           # Grid spacing
                 dt=dt         # Time step
