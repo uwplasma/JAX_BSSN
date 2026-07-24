@@ -238,6 +238,46 @@ class TestRK4Evolution(unittest.TestCase):
         self.assertTrue(jnp.all(rho >= 0.0))
         self.assertTrue(jnp.all(jnp.isfinite(S_ij)))
 
+    def test_shift_evolution_gamma_driver_and_damping(self):
+        """Shift evolution should include Gamma-driver forcing and eta damping."""
+        n = 4
+        zeros_scalar = jnp.zeros((n, n, n))
+        zeros_tensor = jnp.zeros((3, 3, n, n, n))
+        conformal_metric = jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3, n, n, n))
+
+        shift = jnp.stack(
+            [
+                0.1 * jnp.ones((n, n, n)),
+                -0.2 * jnp.ones((n, n, n)),
+                0.05 * jnp.ones((n, n, n)),
+            ],
+            axis=0,
+        )
+        conformal_connection = jnp.stack(
+            [
+                0.3 * jnp.ones((n, n, n)),
+                -0.1 * jnp.ones((n, n, n)),
+                0.2 * jnp.ones((n, n, n)),
+            ],
+            axis=0,
+        )
+
+        vars_state = BSSNVariables(
+            conformal_metric=conformal_metric,
+            conformal_factor=jnp.ones((n, n, n)),
+            traceless_K=zeros_tensor,
+            trace_K=zeros_scalar,
+            conformal_connection=conformal_connection,
+            lapse=jnp.ones((n, n, n)),
+            shift=shift,
+        )
+        params = BSSNParameters(eta=2.0, g=0.75, nu=0.0, dx=self.dx, dt=self.dt)
+
+        dt_shift = evolve_shift(vars_state, params)
+        expected = params.g * conformal_connection - params.eta * shift
+
+        self.assertTrue(jnp.allclose(dt_shift, expected, atol=1e-6))
+
     def test_bssn_manufactured_solution_consistency(self):
         """
         Test manufactured solutions with BSSN evolution using finite differences.

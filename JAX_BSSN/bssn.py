@@ -57,6 +57,27 @@ class BSSNParameters(NamedTuple):
 
 
 @jit
+def compute_shift_derivatives(shift: jnp.ndarray, dx: float) -> jnp.ndarray:
+    """
+    Compute spatial derivatives of the shift vector.
+
+    The returned tensor is indexed as d_beta[i, j] = partial_j beta^i.
+    """
+    d_beta = jnp.stack(
+        [
+            jnp.stack(
+                [diff1_field(shift[i, ...], j, dx) for j in range(3)],
+                axis=0,
+            )
+            for i in range(3)
+        ],
+        axis=0,
+    )
+
+    return d_beta
+
+
+@jit
 def pack_symmetric_3x3(tensor: jnp.ndarray) -> jnp.ndarray:
     """
     Pack symmetric 3x3 tensor into 6-component array.
@@ -293,10 +314,21 @@ def evolve_conformal_metric(vars: BSSNVariables,
     Returns:
         Time derivative of conformal metric
     """
-    # Note: this is only valid in the harmonic gauge where shift is 0
-    
-    # First term: -2α A_ij
-    dt_gamma = -2.0 * vars.lapse * vars.traceless_K
+    grad_gamma = jnp.stack(
+        [diff1_field(vars.conformal_metric, d + 2, params.dx) for d in range(3)],
+        axis=0,
+    )
+    shift = vars.shift
+    grad_shift = compute_shift_derivatives(shift, params.dx)
+
+    first_term = jnp.einsum('m...,mij...->ij...', shift, grad_gamma)
+    second_term = jnp.einsum('mi...,mj...->ij...', vars.conformal_metric, grad_shift)
+    third_term = jnp.einsum('mj...,mi...->ij...', vars.conformal_metric, grad_shift)
+    div_shift = jnp.einsum('ii...->...', grad_shift)
+    fourth_term = -2.0 / 3.0 * vars.conformal_metric * div_shift
+    fifth_term = -2.0 * vars.lapse * vars.traceless_K
+
+    dt_gamma = first_term + second_term + third_term + fourth_term + fifth_term
 
     # Kreiss-Oliger dissipation can be added here if desired
     dgamma_dx1 = diff6_field(vars.conformal_metric, 2, params.dx)
@@ -325,10 +357,15 @@ def evolve_conformal_factor(vars: BSSNVariables,
         Time derivative of conformal factor
     """
     
-    # Note: this is only valid in the harmonic gauge where shift is 0
-    
-    # First term: (1/3) α W K
-    dt_W = (1.0/3.0) * vars.lapse * vars.conformal_factor * vars.trace_K
+    shift = vars.shift
+    grad_W = jnp.stack([diff1_field(vars.conformal_factor, d, params.dx) for d in range(3)], axis=0)
+    first_term = jnp.einsum('i...,i...->...', shift, grad_W)
+    second_term = (1.0 / 3.0) * vars.lapse * vars.conformal_factor * vars.trace_K
+    grad_shift = compute_shift_derivatives(shift, params.dx)
+    div_shift = jnp.einsum('ii...->...', grad_shift)
+    third_term = -(1.0 / 3.0) * vars.conformal_factor * div_shift
+
+    dt_W = first_term + second_term + third_term
 
     dW_dx1 = diff6_field(vars.conformal_factor, 0, params.dx)
     dW_dx2 = diff6_field(vars.conformal_factor, 1, params.dx)
@@ -354,9 +391,6 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     Returns:
         Time derivative of trace K
     """
-
-    # Note: this is only valid in the harmonic gauge where shift is 0
-
     dx = params.dx
     alpha = vars.lapse
     K = vars.trace_K
@@ -402,7 +436,11 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
 
     fourth_term = 4 * jnp.pi * alpha * (vars.rho + S)
 
-    dt_K = first_term + second_term + third_term + fourth_term
+    shift = vars.shift
+    grad_K = jnp.stack([diff1_field(K, d, params.dx) for d in range(3)], axis=0)
+    fifth_term = jnp.einsum('i...,i...->...', shift, grad_K)
+
+    dt_K = first_term + second_term + third_term + fourth_term + fifth_term
     # compute dt_K
 
     dK_dx1 = diff6_field(vars.trace_K, 0, params.dx)
@@ -477,9 +515,6 @@ def evolve_traceless_extrinsic_curvature(vars: BSSNVariables,
     Returns:
         Time derivative of traceless extrinsic curvature
     """
-
-    # Note this is only valid in holonomic gauge (shift=0)
-
     dx = params.dx
     alpha = vars.lapse
     K = vars.trace_K
@@ -525,26 +560,31 @@ def evolve_traceless_extrinsic_curvature(vars: BSSNVariables,
     third_term = traceless_part(third_term, vars.conformal_metric, inv_gamma)
     # third term
 
+    shift = vars.shift
+    grad_shift = compute_shift_derivatives(shift, params.dx)
+    grad_A = jnp.stack([diff1_field(A_ij, d + 2, params.dx) for d in range(3)], axis=0)
+
+    fourth_term = jnp.einsum('m...,mij...->ij...', shift, grad_A)
+    fifth_term = (
+        jnp.einsum('mi...,mj...->ij...', A_ij, grad_shift)
+        + jnp.einsum('mj...,mi...->ij...', A_ij, grad_shift)
+    )
+    div_shift = jnp.einsum('ii...->...', grad_shift)
+    sixth_term = -2.0 / 3.0 * A_ij * div_shift
+
     M = compute_momentum_constraint(vars, params)
-    # Momentum constraint term
-
     kappa = params.kappa
-    # constraint damping parameter
-
     dMidj = jnp.zeros((3,) + M.shape)
 
     for i in range(3):
         for j in range(3):
-            dMidj = dMidj.at[i,j].set( diff1_field( M[i,...], j, dx) ) 
-        
+            dMidj = dMidj.at[i, j].set(diff1_field(M[i, ...], j, dx))
+
     DjMi = dMidj - jnp.einsum('kij...,k...->ij...', christoffel_second, M)
     DiMj = jnp.swapaxes(DjMi, 0, 1)
-    # compute covariant derivatives of M_i
+    seventh_term = kappa / 2 * alpha * (DjMi + DiMj)
 
-    fourth_term = kappa/2 * alpha * (DjMi + DiMj)
-    # fourth term
-
-    dt_A = first_term + second_term + third_term #+ fourth_term
+    dt_A = first_term + second_term + third_term + fourth_term + fifth_term + sixth_term + seventh_term
     # compute dt_A
 
     dA_dx1 = diff6_field(vars.traceless_K, 2, params.dx)
@@ -591,6 +631,10 @@ def evolve_conformal_connection(vars: BSSNVariables,
     dKdi = jnp.stack( [diff1_field(K, d, dx) for d in range(3)], axis=0)
     # first derivatives of K
 
+    shift = vars.shift
+    d_shift = compute_shift_derivatives(shift, dx)
+    div_shift = jnp.einsum('ii...->...', d_shift)
+
     first_term = -4/3 * alpha * jnp.einsum('ij...,j...->i...', inv_gamma, dKdi)
     # first term
 
@@ -613,7 +657,36 @@ def evolve_conformal_connection(vars: BSSNVariables,
 
     fifth_term = -16.0 * jnp.pi * alpha * vars.momentum_density
 
-    dt_Gamma = first_term + second_term + third_term + fourth_term + fifth_term
+    grad_Gamma = jnp.stack(
+        [diff1_field(vars.conformal_connection, m + 1, dx) for m in range(3)],
+        axis=0,
+    )
+    sixth_term = jnp.einsum('m...,mi...->i...', shift, grad_Gamma)
+    seventh_term = (2.0 / 3.0) * vars.conformal_connection * div_shift
+    eighth_term = -jnp.einsum('m...,im...->i...', vars.conformal_connection, d_shift)
+
+    d2_shift = jnp.zeros((3, 3, 3) + shift.shape[1:])
+    for i in range(3):
+        for m in range(3):
+            for n in range(3):
+                d2_shift = d2_shift.at[i, m, n].set(diff1_field(d_shift[i, n], m, dx))
+
+    ninth_term = jnp.einsum('mn...,imn...->i...', inv_gamma, d2_shift)
+    div_shift_deriv = jnp.stack([diff1_field(div_shift, m, dx) for m in range(3)], axis=0)
+    tenth_term = (1.0 / 3.0) * jnp.einsum('im...,m...->i...', inv_gamma, div_shift_deriv)
+
+    dt_Gamma = (
+        first_term
+        + second_term
+        + third_term
+        + fourth_term
+        + fifth_term
+        + sixth_term
+        + seventh_term
+        + eighth_term
+        + ninth_term
+        + tenth_term
+    )
     # compute dt_Gamma
 
     dGamma_dx1 = diff6_field(vars.conformal_connection, 1, params.dx)
@@ -646,6 +719,9 @@ def evolve_lapse(vars: BSSNVariables, params: BSSNParameters) -> jnp.ndarray:
     # harmonic slicing evolution
     dt_alpha = -f * jnp.power(vars.lapse, 2) * vars.trace_K
 
+    grad_alpha = jnp.stack([diff1_field(vars.lapse, d, dx) for d in range(3)], axis=0)
+    advection_term = jnp.einsum('m...,m...->...', vars.shift, grad_alpha)
+
     dalpha_dx1 = diff6_field(vars.lapse, 0, params.dx)
     dalpha_dx2 = diff6_field(vars.lapse, 1, params.dx)
     dalpha_dx3 = diff6_field(vars.lapse, 2, params.dx)
@@ -654,7 +730,7 @@ def evolve_lapse(vars: BSSNVariables, params: BSSNParameters) -> jnp.ndarray:
     dissipation_term = params.nu / 64 * params.dx**5 * (dalpha_dx1 + dalpha_dx2 + dalpha_dx3)
     # compute dissipation term
     
-    return dt_alpha + dissipation_term
+    return dt_alpha + advection_term + dissipation_term
 
 
 @jit
@@ -670,8 +746,17 @@ def evolve_shift(vars: BSSNVariables, params: BSSNParameters) -> jnp.ndarray:
     Returns:
         Time derivative of shift
     """
-    # in Harmonic gauge with 0 shift, the shift does not evolve
+    shift = vars.shift
+    grad_shift = compute_shift_derivatives(shift, params.dx)
+    advection_term = jnp.einsum('j...,ij...->i...', shift, grad_shift)
+    gamma_driver_term = params.g * vars.conformal_connection
+    damping_term = -params.eta * shift
 
-    dt_beta = 0.0 * vars.conformal_connection  # Placeholder for no evolution
-    
-    return dt_beta
+    dt_beta = gamma_driver_term + advection_term + damping_term
+
+    dbeta_dx1 = diff6_field(shift, 1, params.dx)
+    dbeta_dx2 = diff6_field(shift, 2, params.dx)
+    dbeta_dx3 = diff6_field(shift, 3, params.dx)
+    dissipation_term = params.nu / 64 * params.dx**5 * (dbeta_dx1 + dbeta_dx2 + dbeta_dx3)
+
+    return dt_beta + dissipation_term
