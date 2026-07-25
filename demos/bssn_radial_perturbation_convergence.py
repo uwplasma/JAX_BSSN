@@ -1,4 +1,5 @@
 import argparse
+import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,7 +9,7 @@ from JAX_BSSN.bssn import BSSNParameters, BSSNVariables
 from JAX_BSSN.evolve import rk4_step
 
 
-def build_radially_perturbed_initial_data(coords, amplitude=1e-3, sigma=1.0):
+def build_radially_perturbed_initial_data(coords, amplitude=1e-3, sigma=1.0, dtype=jnp.float32):
     """Construct BSSN initial data with a smooth Gaussian radial conformal perturbation."""
     x3d, y3d, z3d = jnp.meshgrid(coords, coords, coords, indexing="ij")
     r3d = jnp.sqrt(x3d**2 + y3d**2 + z3d**2)
@@ -16,19 +17,19 @@ def build_radially_perturbed_initial_data(coords, amplitude=1e-3, sigma=1.0):
     pulse = amplitude * jnp.exp(-(r3d**2) / (sigma**2))
     conformal_factor = 1.0 / (1.0 + pulse)
 
-    conformal_metric = jnp.zeros((3, 3) + r3d.shape, dtype=jnp.float64)
+    conformal_metric = jnp.zeros((3, 3) + r3d.shape, dtype=dtype)
     conformal_metric = conformal_metric.at[0, 0].set(1.0)
     conformal_metric = conformal_metric.at[1, 1].set(1.0)
     conformal_metric = conformal_metric.at[2, 2].set(1.0)
 
-    traceless_k = jnp.zeros((3, 3) + r3d.shape, dtype=jnp.float64)
-    trace_k = jnp.zeros(r3d.shape, dtype=jnp.float64)
-    conformal_connection = jnp.zeros((3,) + r3d.shape, dtype=jnp.float64)
-    lapse = jnp.ones(r3d.shape, dtype=jnp.float64)
-    shift = jnp.zeros((3,) + r3d.shape, dtype=jnp.float64)
-    rho_field = jnp.zeros(r3d.shape, dtype=jnp.float64)
-    stress_tensor = jnp.zeros((3, 3) + r3d.shape, dtype=jnp.float64)
-    momentum_density = jnp.zeros((3,) + r3d.shape, dtype=jnp.float64)
+    traceless_k = jnp.zeros((3, 3) + r3d.shape, dtype=dtype)
+    trace_k = jnp.zeros(r3d.shape, dtype=dtype)
+    conformal_connection = jnp.zeros((3,) + r3d.shape, dtype=dtype)
+    lapse = jnp.ones(r3d.shape, dtype=dtype)
+    shift = jnp.zeros((3,) + r3d.shape, dtype=dtype)
+    rho_field = jnp.zeros(r3d.shape, dtype=dtype)
+    stress_tensor = jnp.zeros((3, 3) + r3d.shape, dtype=dtype)
+    momentum_density = jnp.zeros((3,) + r3d.shape, dtype=dtype)
 
     return (
         lapse,
@@ -59,6 +60,7 @@ def run_perturbed_bssn_simulation(
     bc_width,
     bc_order,
     bc_strength,
+    dtype,
 ):
     """Evolve a radially perturbed metric forward to target_time using BSSN RK4."""
     dx = domain_size / nx
@@ -78,7 +80,12 @@ def run_perturbed_bssn_simulation(
         rho_field,
         stress_tensor,
         momentum_density,
-    ) = build_radially_perturbed_initial_data(coords, amplitude=amplitude, sigma=sigma)
+    ) = build_radially_perturbed_initial_data(
+        coords,
+        amplitude=amplitude,
+        sigma=sigma,
+        dtype=dtype,
+    )
 
     vars_bssn = BSSNVariables(
         conformal_metric=conformal_metric,
@@ -119,12 +126,40 @@ def run_perturbed_bssn_simulation(
     for _ in range(steps):
         vars_bssn = rk4_step(vars_bssn, params)
 
+    vars_bssn.shift.block_until_ready()
+
+    if not bool(jnp.all(jnp.isfinite(vars_bssn.shift))):
+        raise RuntimeError(
+            "Shift field became non-finite during evolution. "
+            "Try a shorter '--target-time', smaller '--amplitude', weaker '--gamma-driver', "
+            "or a smaller '--dt-factor'."
+        )
+
     return dx, vars_bssn
 
 
 def downsample_3d(field_fine, ratio):
     """Downsample fine grid slice data by integer factor."""
     return field_fine[::ratio, ::ratio, ::ratio]
+
+
+def validate_resolutions(resolutions):
+    """Require nested refinement levels so fine-grid data can be restricted exactly."""
+    ordered = sorted(resolutions)
+
+    if len(ordered) < 2:
+        raise ValueError("Need at least two resolutions for a convergence comparison.")
+
+    finest = ordered[-1]
+    incompatible = [nx for nx in ordered[:-1] if finest % nx != 0]
+    if incompatible:
+        raise ValueError(
+            "Finest resolution must be an integer multiple of every coarser resolution. "
+            f"Got {ordered}; incompatible coarse levels: {incompatible}. "
+            "Use nested choices such as '--resolutions 32 48 96' or '--resolutions 24 48 96'."
+        )
+
+    return ordered
 
 
 def parse_args():
@@ -135,7 +170,7 @@ def parse_args():
         "--resolutions",
         type=int,
         nargs="+",
-        default=[32, 64, 128],
+        default=[32, 48, 96],
         help="Grid sizes to run, with the largest used as the reference solution",
     )
     parser.add_argument("--domain-size", type=float, default=10.0, help="Domain length")
@@ -161,15 +196,22 @@ def parse_args():
     parser.add_argument("--bc-width", type=float, default=8.0, help="Super-Gaussian boundary width in grid cells")
     parser.add_argument("--bc-order", type=float, default=4.0, help="Super-Gaussian boundary exponent")
     parser.add_argument("--bc-strength", type=float, default=1.0, help="Super-Gaussian boundary strength")
+    parser.add_argument(
+        "--x64",
+        action="store_true",
+        help="Enable float64 evolution. This is more accurate but roughly doubles memory use.",
+    )
     parser.add_argument("--output", default="bssn_shift_convergence.png", help="Output plot filename")
     return parser.parse_args()
 
 
 def main():
-    setup_jax_config(enable_x64=True, verbose=False)
     args = parse_args()
+    setup_jax_config(enable_x64=args.x64, verbose=False)
 
-    resolutions = sorted(args.resolutions)
+    dtype = jnp.float64 if args.x64 else jnp.float32
+
+    resolutions = validate_resolutions(args.resolutions)
     domain_size = args.domain_size
     dt_factor = args.dt_factor
     target_time = args.target_time
@@ -181,29 +223,40 @@ def main():
     print(
         f"Gauge = {'1+log' if args.gauge == 1 else 'harmonic'} | "
         f"shift driver g = {args.gamma_driver:.3f} | eta = {args.eta:.3f} | "
-        f"boundaries = {'super-Gaussian' if use_supergaussian_boundaries else 'periodic'}"
+        f"boundaries = {'super-Gaussian' if use_supergaussian_boundaries else 'periodic'} | "
+        f"precision = {'float64' if args.x64 else 'float32'}"
     )
 
     nx_fine = max(resolutions)
     coarse_resolutions = [nx for nx in resolutions if nx < nx_fine]
 
     print(f"\n[1/2] Computing finest reference solution on Nx = {nx_fine}...")
-    _, fine_vars = run_perturbed_bssn_simulation(
-        nx_fine,
-        domain_size,
-        dt_factor,
-        target_time,
-        amplitude,
-        sigma,
-        args.eta,
-        args.gamma_driver,
-        args.ko,
-        args.gauge,
-        use_supergaussian_boundaries,
-        args.bc_width,
-        args.bc_order,
-        args.bc_strength,
-    )
+    try:
+        _, fine_vars = run_perturbed_bssn_simulation(
+            nx_fine,
+            domain_size,
+            dt_factor,
+            target_time,
+            amplitude,
+            sigma,
+            args.eta,
+            args.gamma_driver,
+            args.ko,
+            args.gauge,
+            use_supergaussian_boundaries,
+            args.bc_width,
+            args.bc_order,
+            args.bc_strength,
+            dtype,
+        )
+    except jax.errors.JaxRuntimeError as exc:
+        if "RESOURCE_EXHAUSTED" in str(exc) or "Out of memory" in str(exc):
+            raise RuntimeError(
+                "Finest-grid reference solve ran out of memory. "
+                "Use smaller nested resolutions such as '--resolutions 32 48 96', "
+                "reduce '--target-time', or omit '--x64' so the run stays in float32."
+            ) from exc
+        raise
 
     fine_shift_x = fine_vars.shift[0]
 
@@ -227,6 +280,7 @@ def main():
             args.bc_width,
             args.bc_order,
             args.bc_strength,
+            dtype,
         )
 
         coarse_shift_x = coarse_vars.shift[0]
