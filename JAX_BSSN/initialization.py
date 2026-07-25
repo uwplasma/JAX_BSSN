@@ -83,6 +83,16 @@ def _compute_conformal_connection(conformal_metric: jnp.ndarray, dx: float) -> j
     return jnp.einsum("mn..., imn... -> i...", inv_conformal_metric, christoffel_2)
 
 
+def _vacuum_matter_fields(shape: tuple[int, int, int], dtype) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Return full-grid zero matter sources for vacuum initial data."""
+
+    rho = jnp.zeros(shape, dtype=dtype)
+    S_ij = jnp.zeros((3, 3) + shape, dtype=dtype)
+    momentum_density = jnp.zeros((3,) + shape, dtype=dtype)
+
+    return rho, S_ij, momentum_density
+
+
 def gauge_wave_data(
     ni: int,
     nj: int,
@@ -142,6 +152,7 @@ def gauge_wave_data(
     conformal_connection = jnp.einsum(
         "mn..., imn... -> i...", inv_conformal_metric, christoffel_2
     )
+    rho, S_ij, momentum_density = _vacuum_matter_fields(shape, conformal_metric.dtype)
 
     return BSSNVariables(
         conformal_metric=conformal_metric,
@@ -151,6 +162,9 @@ def gauge_wave_data(
         conformal_connection=conformal_connection,
         lapse=lapse,
         shift=shift,
+        rho=rho,
+        S_ij=S_ij,
+        momentum_density=momentum_density,
     )
 
 
@@ -236,6 +250,7 @@ def gowdy_wave_data(
 
     lapse = t0 ** (-0.25) * jnp.exp(0.25 * lam)
     shift = jnp.zeros((3,) + shape)
+    rho, S_ij, momentum_density = _vacuum_matter_fields(shape, conformal_metric.dtype)
 
     return BSSNVariables(
         conformal_metric=conformal_metric,
@@ -245,6 +260,9 @@ def gowdy_wave_data(
         conformal_connection=conformal_connection,
         lapse=lapse,
         shift=shift,
+        rho=rho,
+        S_ij=S_ij,
+        momentum_density=momentum_density,
     )
 
 
@@ -301,6 +319,7 @@ def linear_wave_data(
 
     lapse = jnp.ones(shape)
     shift = jnp.zeros((3,) + shape)
+    rho, S_ij, momentum_density = _vacuum_matter_fields(shape, conformal_metric.dtype)
 
     return BSSNVariables(
         conformal_metric=conformal_metric,
@@ -310,6 +329,9 @@ def linear_wave_data(
         conformal_connection=conformal_connection,
         lapse=lapse,
         shift=shift,
+        rho=rho,
+        S_ij=S_ij,
+        momentum_density=momentum_density,
     )
 
 
@@ -365,6 +387,7 @@ def puncture_black_hole_data(
     traceless_K = jnp.zeros_like(conformal_metric)
     trace_K = jnp.zeros(shape, dtype=conformal_factor.dtype)
     conformal_connection = jnp.zeros((3,) + shape, dtype=conformal_factor.dtype)
+    rho, S_ij, momentum_density = _vacuum_matter_fields(shape, conformal_factor.dtype)
 
     return BSSNVariables(
         conformal_metric=conformal_metric,
@@ -374,6 +397,9 @@ def puncture_black_hole_data(
         conformal_connection=conformal_connection,
         lapse=lapse,
         shift=shift,
+        rho=rho,
+        S_ij=S_ij,
+        momentum_density=momentum_density,
     )
 
 
