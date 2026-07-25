@@ -113,6 +113,15 @@ def _apply_active_supergaussian_boundaries(
         shift=_blend_to_flat(
             vars.shift, jnp.zeros_like(vars.shift), vector_weight
         ),
+        rho=_blend_to_flat(vars.rho, jnp.zeros_like(vars.rho), weight),
+        S_ij=_blend_to_flat(
+            vars.S_ij, jnp.zeros_like(vars.S_ij), tensor_weight
+        ),
+        momentum_density=_blend_to_flat(
+            vars.momentum_density,
+            jnp.zeros_like(vars.momentum_density),
+            vector_weight,
+        ),
     )
 
 
