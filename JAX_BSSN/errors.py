@@ -66,8 +66,9 @@ def compute_hamiltonian_constraint(vars: BSSNVariables,
                             vars.traceless_K, vars.traceless_K)
 
 
-    # Hamiltonian constraint
-    hamiltonian = W**2 * ricci_scalar + 2/3 * K_squared - A_squared
+    # Hamiltonian constraint with matter source term:
+    # R + 2/3 K^2 - A_ij A^ij = 16 pi rho
+    hamiltonian = W**2 * ricci_scalar + 2/3 * K_squared - A_squared - 16.0 * jnp.pi * vars.rho
 
     return hamiltonian
 
