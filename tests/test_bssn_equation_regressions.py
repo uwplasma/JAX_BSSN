@@ -11,6 +11,7 @@ from JAX_BSSN.bssn import (
     BSSNParameters,
     BSSNVariables,
     compute_momentum_constraint,
+    evolve_trace_extrinsic_curvature,
     evolve_traceless_extrinsic_curvature,
 )
 from JAX_BSSN.derivatives import diff1_field
@@ -154,6 +155,34 @@ class TestBSSNEquationRegressions(unittest.TestCase):
         expected_difference = 0.5 * params1.kappa * vars.lapse * (DjMi + DiMj)
 
         np.testing.assert_allclose(rhs1 - rhs0, expected_difference, atol=4.0e-7)
+
+    def test_trace_k_rhs_includes_matter_source_when_shift_is_zero(self):
+        params = BSSNParameters(dx=self.dx, dt=0.01, nu=0.0, kappa=0.0)
+        rho = 0.02 + 0.005 * jnp.cos(self.X)
+        stress_trace = 0.03 + 0.004 * jnp.sin(self.Y)
+        vars_base = BSSNVariables(
+            conformal_metric=jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3) + self.shape),
+            conformal_factor=jnp.ones(self.shape),
+            traceless_K=jnp.zeros((3, 3) + self.shape),
+            trace_K=jnp.zeros(self.shape),
+            conformal_connection=jnp.zeros((3,) + self.shape),
+            lapse=1.0 + 0.01 * jnp.cos(self.Z),
+            shift=jnp.zeros((3,) + self.shape),
+            rho=jnp.zeros(self.shape),
+            S_ij=jnp.zeros((3, 3) + self.shape),
+            momentum_density=jnp.zeros((3,) + self.shape),
+        )
+
+        stress_tensor = jnp.zeros((3, 3) + self.shape)
+        stress_tensor = stress_tensor.at[0, 0].set(stress_trace)
+
+        vars_with_matter = vars_base._replace(rho=rho, S_ij=stress_tensor)
+
+        rhs_base = evolve_trace_extrinsic_curvature(vars_base, params)
+        rhs_matter = evolve_trace_extrinsic_curvature(vars_with_matter, params)
+
+        expected_difference = 4.0 * jnp.pi * vars_base.lapse * (rho + stress_trace)
+        np.testing.assert_allclose(rhs_matter - rhs_base, expected_difference, atol=1.0e-12)
 
     def test_rk4_projects_pure_trace_A_before_first_rhs(self):
         gamma = jnp.eye(3)[:, :, None, None, None] * jnp.ones(

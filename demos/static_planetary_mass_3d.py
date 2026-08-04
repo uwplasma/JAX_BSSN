@@ -6,9 +6,8 @@ import numpy as np
 from tqdm import tqdm
 
 from JAX_BSSN import setup_jax_config
-from JAX_BSSN.bssn import BSSNParameters, BSSNVariables, compute_physical_metric
+from JAX_BSSN.bssn import BSSNParameters, BSSNVariables
 from JAX_BSSN.evolve import rk4_step
-from JAX_BSSN.tensor_algebra import invert_3x3_metric, trace_tensor
 
 
 def make_rho_field(coords, radius, rho_geom):
@@ -83,11 +82,23 @@ def build_periodic_hamiltonian_initial_data(rho_field, dx):
     trace_k = jnp.full(rho_field.shape, k_value)
     conformal_connection = jnp.zeros((3,) + rho_field.shape)
     shift = jnp.zeros((3,) + rho_field.shape)
+    stress_tensor = jnp.zeros((3, 3) + rho_field.shape)
+    momentum_density = jnp.zeros((3,) + rho_field.shape)
 
     phi_init = 0.5 * (1.0 - psi**4)
     lapse = jnp.sqrt(jnp.maximum(1.0 + 2.0 * phi_init, 1e-14))
 
-    return lapse, shift, conformal_factor, conformal_metric, traceless_k, trace_k, conformal_connection
+    return (
+        lapse,
+        shift,
+        conformal_factor,
+        conformal_metric,
+        traceless_k,
+        trace_k,
+        conformal_connection,
+        stress_tensor,
+        momentum_density,
+    )
 
 
 def run_static_mass_3d(radius, rho_geom, nx, domain_size, dt_factor, steps, show_progress=True):
@@ -100,7 +111,17 @@ def run_static_mass_3d(radius, rho_geom, nx, domain_size, dt_factor, steps, show
     x3d, y3d, z3d = jnp.meshgrid(coords, coords, coords, indexing="ij")
     r3d = jnp.maximum(jnp.sqrt(x3d**2 + y3d**2 + z3d**2), 1e-30)
 
-    lapse, shift, conformal_factor, conformal_metric, traceless_k, trace_k, conformal_connection = (
+    (
+        lapse,
+        shift,
+        conformal_factor,
+        conformal_metric,
+        traceless_k,
+        trace_k,
+        conformal_connection,
+        stress_tensor,
+        momentum_density,
+    ) = (
         build_periodic_hamiltonian_initial_data(rho_field, dx)
     )
 
@@ -113,15 +134,18 @@ def run_static_mass_3d(radius, rho_geom, nx, domain_size, dt_factor, steps, show
         lapse=lapse,
         shift=shift,
         rho=rho_field,
+        S_ij=stress_tensor,
+        momentum_density=momentum_density,
     )
     params = BSSNParameters(
         eta=0.0,
         kappa=1.0,
         nu=0.25,
-        f=1.0,
         g=0.0,
         dx=dx,
         dt=dt,
+        zero_shift=1,
+        gauge=0,
     )
 
     iterator = range(steps)
@@ -157,22 +181,6 @@ def radial_bin_average(field, r3d, n_bins=60):
     return r_centers, radial_profile, bin_idx
 
 
-def extract_metric_potential(final_vars):
-    """Compute the weak-field metric potential from the final physical metric."""
-    alpha_final = jnp.asarray(final_vars.lapse, dtype=jnp.float64)
-    final_physical_metric = compute_physical_metric(
-        final_vars.conformal_metric,
-        final_vars.conformal_factor,
-    )
-    reference_metric = jnp.eye(3)[..., jnp.newaxis, jnp.newaxis, jnp.newaxis]
-    reference_factor = jnp.ones_like(final_vars.conformal_factor)
-    initial_physical_metric = compute_physical_metric(reference_metric, reference_factor)
-    delta_g_ij = final_physical_metric - initial_physical_metric
-    inv_initial_metric = invert_3x3_metric(initial_physical_metric)
-    spatial_trace = trace_tensor(delta_g_ij, inv_initial_metric)
-    return alpha_final, spatial_trace, spatial_trace / 6.0
-
-
 def extract_lapse_potential(alpha_final):
     """Weak-field lapse potential Phi ~= 1/2 (alpha^2 - 1)."""
     return 0.5 * (alpha_final**2 - 1.0)
@@ -190,46 +198,34 @@ def solve_poisson_periodic_reference(rho_field, dx):
     return invert_periodic_laplacian_zero_mean(source, dx)
 
 
-def newtonian_potential_uniform_sphere(r, mass_geom, radius):
-    """Analytic isolated Newtonian potential for a uniform sphere."""
-    inside = -mass_geom / (2.0 * radius) * (3.0 - r**2 / radius**2)
-    outside = -mass_geom / r
-    return jnp.where(r <= radius, inside, outside)
-
-
-def plot_diagnostics(result, radius, mass_geom, n_bins, output_prefix):
+def plot_diagnostics(result, radius, n_bins, output_prefix):
     """Build radial diagnostics and save the comparison plots."""
-    alpha_final, spatial_trace, phi_metric_raw = extract_metric_potential(result["vars"])
+    alpha_final = jnp.asarray(result["vars"].lapse, dtype=jnp.float64)
     phi_lapse_raw = extract_lapse_potential(alpha_final)
-    phi_metric_periodic, metric_zero_mode = shift_potential_zero_mode(phi_metric_raw)
     phi_lapse_periodic, lapse_zero_mode = shift_potential_zero_mode(phi_lapse_raw)
     phi_poisson_periodic = solve_poisson_periodic_reference(result["rho_field"], result["dx"])
     phi_poisson_periodic, poisson_zero_mode = shift_potential_zero_mode(phi_poisson_periodic)
 
-    r_centers, phi_metric_periodic_radial, bin_idx = radial_bin_average(
-        phi_metric_periodic,
+    r_centers, phi_lapse_periodic_radial, bin_idx = radial_bin_average(
+        phi_lapse_periodic,
         result["r3d"],
         n_bins=n_bins,
     )
-    _, phi_lapse_periodic_radial, _ = radial_bin_average(phi_lapse_periodic, result["r3d"], n_bins=n_bins)
-    _, phi_metric_raw_radial, _ = radial_bin_average(phi_metric_raw, result["r3d"], n_bins=n_bins)
     _, phi_poisson_periodic_radial, _ = radial_bin_average(
         phi_poisson_periodic,
         result["r3d"],
         n_bins=n_bins,
     )
 
-    r_ref = jnp.linspace(0.01, float(r_centers[-1]), 500)
-    phi_ref_isolated = newtonian_potential_uniform_sphere(r_ref, mass_geom, radius)
     surface_idx = int(jnp.argmin(jnp.abs(r_centers - float(radius))))
     phi_surface = float(phi_poisson_periodic_radial[surface_idx])
-    y_lo = 1.5 * phi_surface
-    y_hi = -0.3 * phi_surface
+    zoom_half_width = max(abs(phi_surface), 1.0e-12)
+    y_lo = phi_surface - 0.8 * zoom_half_width
+    y_hi = phi_surface + 0.8 * zoom_half_width
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     axes[0].plot(r_centers, phi_poisson_periodic_radial, "k--", lw=2, label=r"Periodic Poisson $\Phi_{\mathrm{per}}$")
     axes[0].plot(r_centers, phi_lapse_periodic_radial, lw=1.2, label=r"BSSN lapse $\frac{1}{2}(\alpha^2 - 1) - \langle \Phi \rangle$")
-    axes[0].plot(r_centers, phi_metric_periodic_radial, ":", lw=1.0, label=r"BSSN metric $\Phi_{\mathrm{metric}} - \langle \Phi \rangle$")
     axes[0].axvline(float(radius), ls=":", color="grey", label=f"R = {float(radius):.2e} m")
     axes[0].set_xlabel("r [m]")
     axes[0].set_ylabel(r"$\Phi$")
@@ -240,7 +236,6 @@ def plot_diagnostics(result, radius, mass_geom, n_bins, output_prefix):
 
     axes[1].plot(r_centers, phi_poisson_periodic_radial, "k--", lw=2, label=r"Periodic Poisson $\Phi_{\mathrm{per}}$")
     axes[1].plot(r_centers, phi_lapse_periodic_radial, "o-", ms=4, lw=1.2, color="tab:blue", label="BSSN lapse shifted to zero mean")
-    axes[1].plot(r_centers, phi_metric_periodic_radial, ":", ms=4, lw=1.0, color="tab:orange", label="BSSN metric shifted to zero mean")
     axes[1].axvline(float(radius), ls=":", color="grey")
     axes[1].set_ylim(y_lo, y_hi)
     axes[1].set_xlabel("r [m]")
@@ -252,31 +247,9 @@ def plot_diagnostics(result, radius, mass_geom, n_bins, output_prefix):
     fig.tight_layout()
     fig.savefig(f"{output_prefix}_potentials.png", dpi=300)
 
-    fig2, ax2 = plt.subplots(figsize=(8, 5))
-    ax2.plot(r_centers, phi_poisson_periodic_radial, "k--", lw=2, label=r"Periodic Poisson $\Phi_{\mathrm{per}}$")
-    ax2.plot(r_centers, phi_lapse_periodic_radial, lw=1.2, label=r"Zero-mean BSSN lapse $\Phi$")
-    ax2.plot(r_centers, phi_metric_raw_radial, ":", lw=1.0, label=r"Raw BSSN metric $\Phi_{\mathrm{metric}}$")
-    ax2.plot(r_centers, phi_metric_periodic_radial, "o-", ms=4, lw=1.2, label=r"Zero-mean BSSN metric $\Phi_{\mathrm{metric}}$")
-    ax2.plot(r_ref, phi_ref_isolated, color="tab:green", lw=1.0, alpha=0.8, label=r"Isolated Newtonian $\Phi_{\mathrm{iso}}$")
-    ax2.axvline(float(radius), ls=":", color="grey", label=f"R = {float(radius):.2e} m")
-    ax2.set_xlabel("r [m]")
-    ax2.set_ylabel(r"$\Phi$")
-    ax2.set_title("Periodic zero-mode diagnostic")
-    ax2.legend(fontsize=9)
-    ax2.grid(True, alpha=0.3)
-    ax2.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
-    fig2.tight_layout()
-    fig2.savefig(f"{output_prefix}_zero_mode.png", dpi=300)
-
     alpha_radial = jnp.array(
         [
             float(jnp.asarray(alpha_final).ravel()[bin_idx == i].mean()) if jnp.any(bin_idx == i) else jnp.nan
-            for i in range(n_bins)
-        ]
-    )
-    spatial_trace_radial = jnp.array(
-        [
-            float(spatial_trace.ravel()[bin_idx == i].mean()) if jnp.any(bin_idx == i) else jnp.nan
             for i in range(n_bins)
         ]
     )
@@ -285,12 +258,9 @@ def plot_diagnostics(result, radius, mass_geom, n_bins, output_prefix):
         "surface_idx": surface_idx,
         "phi_poisson_periodic_radial": phi_poisson_periodic_radial,
         "bssn_dev": (alpha_radial**2 - 1.0) / 2.0,
-        "spatial_trace_radial": spatial_trace_radial,
         "lapse_zero_mode": lapse_zero_mode,
-        "metric_zero_mode": metric_zero_mode,
         "poisson_zero_mode": poisson_zero_mode,
         "rms_lapse": jnp.sqrt(jnp.mean((phi_lapse_periodic - phi_poisson_periodic) ** 2)),
-        "rms_metric": jnp.sqrt(jnp.mean((phi_metric_periodic - phi_poisson_periodic) ** 2)),
     }
 
 
@@ -320,7 +290,6 @@ def main():
     rho_si = args.rho_si
     rho_geom = g_over_c2_m * rho_si
     mass_si = (4.0 / 3.0) * jnp.pi * radius**3 * rho_si
-    mass_geom = g_over_c2_m * mass_si
     domain_size = args.domain_factor * radius
 
     print("Running periodic static planetary mass demo")
@@ -351,7 +320,6 @@ def main():
     diagnostics = plot_diagnostics(
         result,
         radius=radius,
-        mass_geom=mass_geom,
         n_bins=args.radial_bins,
         output_prefix=args.output_prefix,
     )
@@ -360,14 +328,10 @@ def main():
     print("\n--- Periodic diagnostic ---")
     print(f"Periodic Poisson Phi(R)    = {float(diagnostics['phi_poisson_periodic_radial'][surface_idx]):.4e}")
     print(f"BSSN 1/2(alpha^2 - 1)      = {float(diagnostics['bssn_dev'][surface_idx]):.4e}")
-    print(f"BSSN 1/6 tr(delta g)       = {float(diagnostics['spatial_trace_radial'][surface_idx] / 6.0):.4e}")
     print(f"lapse zero mode removed    = {float(diagnostics['lapse_zero_mode']):.4e}")
-    print(f"metric zero mode removed   = {float(diagnostics['metric_zero_mode']):.4e}")
     print(f"poisson zero mode removed  = {float(diagnostics['poisson_zero_mode']):.4e}")
     print(f"RMS(lapse - Poisson)       = {float(diagnostics['rms_lapse']):.4e}")
-    print(f"RMS(metric - Poisson)      = {float(diagnostics['rms_metric']):.4e}")
     print(f"saved                      = {args.output_prefix}_potentials.png")
-    print(f"saved                      = {args.output_prefix}_zero_mode.png")
 
 
 if __name__ == "__main__":

@@ -480,11 +480,11 @@ def evolve_trace_extrinsic_curvature(vars: BSSNVariables,
     grad_K = jnp.stack( [diff1_field(K, d, params.dx) for d in range(3)], axis=0)
     # compute the gradient of K
 
-    fourth_term = jnp.einsum('i...,i...->...', shift, grad_K)
+    fifth_term = jnp.einsum('i...,i...->...', shift, grad_K)
     # compute the advection term due to shift
 
 
-    dt_K = first_term + second_term + third_term + fourth_term
+    dt_K = first_term + second_term + third_term + fourth_term + fifth_term
     # compute dt_K
 
     dK_dx1 = diff6_field(vars.trace_K, 0, params.dx)
