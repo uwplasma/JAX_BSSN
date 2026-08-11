@@ -23,6 +23,7 @@ from JAX_BSSN.tensor_algebra import (
     trace_tensor,
     traceless_part,
 )
+from tests.helpers import vacuum_matter_fields
 
 
 class TestBSSNEquationRegressions(unittest.TestCase):
@@ -64,6 +65,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
         conformal_connection = jnp.einsum(
             "mn...,imn...->i...", inv_gamma, christoffel
         )
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, gamma.dtype
+        )
 
         return BSSNVariables(
             conformal_metric=gamma,
@@ -73,6 +77,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
             conformal_connection=conformal_connection,
             lapse=jnp.ones(self.shape),
             shift=jnp.zeros((3,) + self.shape),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
     def test_momentum_constraint_matches_notes_formula(self):
@@ -190,6 +197,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
         )
         pure_trace_A = 0.02 * jnp.sin(self.X)
         A_ij = gamma * pure_trace_A
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, gamma.dtype
+        )
 
         vars = BSSNVariables(
             conformal_metric=gamma,
@@ -199,6 +209,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
             conformal_connection=jnp.zeros((3,) + self.shape),
             lapse=jnp.ones(self.shape),
             shift=jnp.zeros((3,) + self.shape),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         params = BSSNParameters(
             dx=self.dx, dt=0.01, nu=0.0, kappa=0.0, g=0.0, eta=0.0
@@ -224,6 +237,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
 
         traceless_K = jnp.zeros((3, 3) + self.shape)
         traceless_K = traceless_K.at[0, 0].set(0.01 * jnp.sin(self.X))
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, gamma.dtype
+        )
 
         vars = BSSNVariables(
             conformal_metric=gamma,
@@ -240,6 +256,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
             ),
             lapse=1.0 + 0.01 * jnp.cos(self.Z),
             shift=jnp.zeros((3,) + self.shape),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
         projected = enforce_unit_determinant_conformal_metric(vars)
@@ -261,6 +280,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
         gamma = gamma.at[1, 1].set(0.9 + 0.01 * jnp.cos(self.Y))
         gamma = gamma.at[2, 2].set(1.1 + 0.01 * jnp.sin(self.Z))
         W = 1.0 + 0.03 * jnp.cos(self.X)
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, gamma.dtype
+        )
 
         vars = BSSNVariables(
             conformal_metric=gamma,
@@ -270,6 +292,9 @@ class TestBSSNEquationRegressions(unittest.TestCase):
             conformal_connection=jnp.zeros((3,) + self.shape),
             lapse=jnp.ones(self.shape),
             shift=jnp.zeros((3,) + self.shape),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         params = BSSNParameters(
             dx=self.dx, dt=0.01, nu=0.0, kappa=0.0, g=0.0, eta=0.0

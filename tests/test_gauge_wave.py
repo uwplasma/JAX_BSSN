@@ -7,8 +7,7 @@ from JAX_BSSN.bssn import (BSSNVariables, BSSNParameters)
 from JAX_BSSN.tensor_algebra import (invert_3x3_metric, christoffel_symbols_second_kind)
 from JAX_BSSN.derivatives import (diff1_field)
 from JAX_BSSN.errors import (compute_hamiltonian_constraint)
-from JAX_BSSN.derivatives import (diff1_field)
-from JAX_BSSN.tensor_algebra import (invert_3x3_metric, christoffel_symbols_second_kind)
+from tests.helpers import vacuum_matter_fields
 
 class TestGaugeWave(unittest.TestCase):
 
@@ -84,6 +83,9 @@ class TestGaugeWave(unittest.TestCase):
         trace_extrinsic_curvature = jnp.einsum('mn..., mn... -> ...', inv_metric, extrinsic_curvature)
         traceless_extrinsic_curvature = conformal_factor**2 * ( extrinsic_curvature - initial_conformal_metric * trace_extrinsic_curvature / 3 )
         # intitial extrinsic curvature
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (nx, nx, nx), initial_conformal_metric.dtype
+        )
 
         vars = BSSNVariables(
             conformal_metric=initial_conformal_metric,
@@ -92,7 +94,10 @@ class TestGaugeWave(unittest.TestCase):
             trace_K=trace_extrinsic_curvature,
             conformal_connection=initial_conformal_connection,
             lapse=initial_lapse,
-            shift=initial_shift
+            shift=initial_shift,
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
         params = BSSNParameters(
@@ -208,6 +213,9 @@ class TestGaugeWave(unittest.TestCase):
             trace_extrinsic_curvature = jnp.einsum('mn..., mn... -> ...', inv_metric, extrinsic_curvature)
             traceless_extrinsic_curvature = conformal_factor**2 * ( extrinsic_curvature - initial_conformal_metric * trace_extrinsic_curvature / 3 )
             # intitial extrinsic curvature
+            rho, stress_tensor, momentum_density = vacuum_matter_fields(
+                (nx, nx, nx), initial_conformal_metric.dtype
+            )
 
             vars = BSSNVariables(
                 conformal_metric=initial_conformal_metric,
@@ -216,7 +224,10 @@ class TestGaugeWave(unittest.TestCase):
                 trace_K=trace_extrinsic_curvature,
                 conformal_connection=initial_conformal_connection,
                 lapse=initial_lapse,
-                shift=initial_shift
+                shift=initial_shift,
+                rho=rho,
+                S_ij=stress_tensor,
+                momentum_density=momentum_density,
             )
 
             params = BSSNParameters(

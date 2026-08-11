@@ -18,6 +18,7 @@ from JAX_BSSN.bssn import (
 )
 from JAX_BSSN.derivatives import diff1_field
 from JAX_BSSN.evolve import rk4_step
+from tests.helpers import vacuum_matter_fields
 
 
 class TestShiftEvolution(unittest.TestCase):
@@ -50,6 +51,9 @@ class TestShiftEvolution(unittest.TestCase):
         )
         alpha = jnp.ones(self.shape) if lapse is None else lapse
         beta = jnp.zeros((3,) + self.shape) if shift is None else shift
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, gamma.dtype
+        )
 
         return BSSNVariables(
             conformal_metric=gamma,
@@ -59,6 +63,9 @@ class TestShiftEvolution(unittest.TestCase):
             conformal_connection=Gamma,
             lapse=alpha,
             shift=beta,
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
     def test_shift_derivatives_keep_component_and_derivative_axes(self):

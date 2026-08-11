@@ -19,6 +19,7 @@ from JAX_BSSN.tensor_algebra import (
     invert_3x3_metric,
     trace_tensor,
 )
+from tests.helpers import vacuum_matter_fields
 
 
 class TestSuperGaussianBoundaries(unittest.TestCase):
@@ -41,6 +42,9 @@ class TestSuperGaussianBoundaries(unittest.TestCase):
         traceless_K = traceless_K.at[0, 0].set(0.03 + perturbation)
         traceless_K = traceless_K.at[1, 1].set(-0.02 - perturbation)
         traceless_K = traceless_K.at[2, 2].set(-0.01)
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            self.shape, conformal_metric.dtype
+        )
 
         self.vars = BSSNVariables(
             conformal_metric=conformal_metric,
@@ -56,6 +60,9 @@ class TestSuperGaussianBoundaries(unittest.TestCase):
                 [0.04 + perturbation, 0.05 + perturbation, 0.06 + perturbation],
                 axis=0,
             ),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
     def test_default_boundary_codes_leave_state_unchanged(self):

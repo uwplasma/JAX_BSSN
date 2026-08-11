@@ -68,6 +68,8 @@ def run_static_mass(R_sphere, rho_geom, nx, nz, L, dt_factor, Nt, snapshot_strid
     traceless_K = jnp.zeros((3, 3, nx, nx, nz))
     trace_K     = jnp.zeros((nx, nx, nz))
     conformal_connection = jnp.zeros((3, nx, nx, nz))
+    stress_tensor = jnp.zeros((3, 3, nx, nx, nz), dtype=gamma.dtype)
+    momentum_density = jnp.zeros((3, nx, nx, nz), dtype=gamma.dtype)
 
     vars = BSSNVariables(
         conformal_metric=gamma,
@@ -78,13 +80,15 @@ def run_static_mass(R_sphere, rho_geom, nx, nz, L, dt_factor, Nt, snapshot_strid
         lapse=alpha,
         shift=beta,
         rho=rho_field,
+        S_ij=stress_tensor,
+        momentum_density=momentum_density,
     )
 
     params = BSSNParameters(
         eta=0.0,
         kappa=0.0,
         nu=0.25,
-        f=1.0,      # 1+log slicing -> lapse settles to ~ 1 + Phi/c^2
+        gauge=1,
         g=0.0,
         dx=dx,
         dt=dt,

@@ -27,6 +27,7 @@ from JAX_BSSN.bssn import (
     evolve_conformal_connection, evolve_lapse, evolve_shift,
     compute_em_sources,
 )
+from tests.helpers import vacuum_matter_fields
 
 
 class TestRK4Evolution(unittest.TestCase):
@@ -96,6 +97,9 @@ class TestRK4Evolution(unittest.TestCase):
         shift = shift.at[0].set(0.005 * jnp.sin(self.Y + self.Z + t))
         shift = shift.at[1].set(0.005 * jnp.sin(self.X + self.Z + t))
         shift = shift.at[2].set(0.005 * jnp.sin(self.X + self.Y + t))
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (self.n, self.n, self.n), conformal_metric.dtype
+        )
         
         return BSSNVariables(
             conformal_metric=conformal_metric,
@@ -104,7 +108,10 @@ class TestRK4Evolution(unittest.TestCase):
             trace_K=trace_K,
             conformal_connection=conformal_connection,
             lapse=lapse,
-            shift=shift
+            shift=shift,
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
     
     def analytical_time_derivatives(self, t=0.0):
@@ -152,6 +159,9 @@ class TestRK4Evolution(unittest.TestCase):
         dt_shift = dt_shift.at[0].set(0.005 * jnp.cos(self.Y + self.Z + t))
         dt_shift = dt_shift.at[1].set(0.005 * jnp.cos(self.X + self.Z + t))
         dt_shift = dt_shift.at[2].set(0.005 * jnp.cos(self.X + self.Y + t))
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (self.n, self.n, self.n), dt_conformal_metric.dtype
+        )
         
         return BSSNVariables(
             conformal_metric=dt_conformal_metric,
@@ -160,7 +170,10 @@ class TestRK4Evolution(unittest.TestCase):
             trace_K=dt_trace_K,
             conformal_connection=dt_conformal_connection,
             lapse=dt_lapse,
-            shift=dt_shift
+            shift=dt_shift,
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
 
     
@@ -168,6 +181,9 @@ class TestRK4Evolution(unittest.TestCase):
         """Test that RK4 step has correct basic structure and dimensionality."""
         
         # Create initial BSSN variables that are essentially flat space
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (self.n, self.n, self.n)
+        )
         vars_initial = BSSNVariables(
             conformal_metric=jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3, self.n, self.n, self.n)),
             conformal_factor=jnp.ones((self.n, self.n, self.n)),
@@ -175,7 +191,10 @@ class TestRK4Evolution(unittest.TestCase):
             trace_K=jnp.zeros((self.n, self.n, self.n)),
             conformal_connection=jnp.zeros((3, self.n, self.n, self.n)),
             lapse=jnp.ones((self.n, self.n, self.n)),
-            shift=jnp.zeros((3, self.n, self.n, self.n))
+            shift=jnp.zeros((3, self.n, self.n, self.n)),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         
         # Use small time step
@@ -261,6 +280,9 @@ class TestRK4Evolution(unittest.TestCase):
             ],
             axis=0,
         )
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (n, n, n), conformal_metric.dtype
+        )
 
         vars_state = BSSNVariables(
             conformal_metric=conformal_metric,
@@ -270,6 +292,9 @@ class TestRK4Evolution(unittest.TestCase):
             conformal_connection=conformal_connection,
             lapse=jnp.ones((n, n, n)),
             shift=shift,
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         params = BSSNParameters(eta=2.0, g=0.75, nu=0.0, dx=self.dx, dt=self.dt)
 
@@ -345,6 +370,9 @@ class TestRK4Evolution(unittest.TestCase):
         small_A = jnp.zeros((3, 3, self.n, self.n, self.n))
         small_A = small_A.at[0, 0].set(0.001 * jnp.sin(self.X + self.Y))
         small_A = small_A.at[1, 1].set(-0.001 * jnp.sin(self.X + self.Y))  # Make it traceless
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (self.n, self.n, self.n), flat_metric.dtype
+        )
         
         vars_initial = BSSNVariables(
             conformal_metric=flat_metric,
@@ -353,7 +381,10 @@ class TestRK4Evolution(unittest.TestCase):
             trace_K=0.001 * jnp.cos(self.X + self.Y + self.Z),
             conformal_connection=jnp.zeros((3, self.n, self.n, self.n)),
             lapse=jnp.ones((self.n, self.n, self.n)),
-            shift=jnp.zeros((3, self.n, self.n, self.n))
+            shift=jnp.zeros((3, self.n, self.n, self.n)),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         
         t_final = 0.001  # Very small evolution time
@@ -400,6 +431,9 @@ class TestRK4Evolution(unittest.TestCase):
         """
         
         # Start with flat space initial data
+        rho, stress_tensor, momentum_density = vacuum_matter_fields(
+            (self.n, self.n, self.n)
+        )
         vars_initial = BSSNVariables(
             conformal_metric=jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3, self.n, self.n, self.n)),
             conformal_factor=jnp.ones((self.n, self.n, self.n)),
@@ -407,7 +441,10 @@ class TestRK4Evolution(unittest.TestCase):
             trace_K=jnp.zeros((self.n, self.n, self.n)),
             conformal_connection=jnp.zeros((3, self.n, self.n, self.n)),
             lapse=jnp.ones((self.n, self.n, self.n)),
-            shift=jnp.zeros((3, self.n, self.n, self.n))
+            shift=jnp.zeros((3, self.n, self.n, self.n)),
+            rho=rho,
+            S_ij=stress_tensor,
+            momentum_density=momentum_density,
         )
         
         # Use small time step for stability

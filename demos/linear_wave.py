@@ -70,7 +70,6 @@ def run_linear_wave(nx, amplitude, wavelength, final_crossings, snapshot_every_c
         eta=0.0,
         kappa=0.0,
         nu=0.0,
-        f=0.0,
         g=0.0,
         dx=dx,
         dt=dt,
