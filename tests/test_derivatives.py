@@ -12,8 +12,12 @@ from jax import jit
 import jax
 from scipy import stats
 
-from JAX_BSSN.derivatives import (
+jax.config.update("jax_enable_x64", True)
+
+from JAX_BSSN.evolution.derivatives import (
     diff1_field,
+    diff1_upwind_field,
+    diff2_field,
     diff6_field,
     compute_all_derivatives,
     gradient_3d,
@@ -26,6 +30,181 @@ from JAX_BSSN.derivatives import (
 
 class TestDerivatives(unittest.TestCase):
     """Test suite for finite difference derivatives."""
+
+    def test_upwind_stencil_selection_coefficients_and_jit(self):
+        n = 19
+        dx = 0.17
+        field = jnp.asarray(
+            np.random.default_rng(814).normal(size=n), dtype=jnp.float64
+        )
+
+        forward = (
+            -3.0 * jnp.roll(field, 1)
+            - 10.0 * field
+            + 18.0 * jnp.roll(field, -1)
+            - 6.0 * jnp.roll(field, -2)
+            + jnp.roll(field, -3)
+        ) / (12.0 * dx)
+        backward = (
+            -jnp.roll(field, 3)
+            + 6.0 * jnp.roll(field, 2)
+            - 18.0 * jnp.roll(field, 1)
+            + 10.0 * field
+            + 3.0 * jnp.roll(field, -1)
+        ) / (12.0 * dx)
+        centered = diff1_field(field, 0, dx)
+
+        coefficient = jnp.resize(
+            jnp.asarray([2.0, -0.5, 0.0], dtype=field.dtype), (n,)
+        )
+        expected = jnp.where(
+            coefficient > 0.0,
+            forward,
+            jnp.where(coefficient < 0.0, backward, centered),
+        )
+        numerical = jax.jit(
+            lambda values, rhs_coefficient: diff1_upwind_field(
+                values, rhs_coefficient, 0, dx
+            )
+        )(field, coefficient)
+
+        np.testing.assert_allclose(numerical, expected, rtol=1.0e-14, atol=1.0e-14)
+
+        forward6 = (
+            2.0 * jnp.roll(field, 2)
+            - 24.0 * jnp.roll(field, 1)
+            - 35.0 * field
+            + 80.0 * jnp.roll(field, -1)
+            - 30.0 * jnp.roll(field, -2)
+            + 8.0 * jnp.roll(field, -3)
+            - jnp.roll(field, -4)
+        ) / (60.0 * dx)
+        backward6 = (
+            jnp.roll(field, 4)
+            - 8.0 * jnp.roll(field, 3)
+            + 30.0 * jnp.roll(field, 2)
+            - 80.0 * jnp.roll(field, 1)
+            + 35.0 * field
+            + 24.0 * jnp.roll(field, -1)
+            - 2.0 * jnp.roll(field, -2)
+        ) / (60.0 * dx)
+        np.testing.assert_allclose(
+            diff1_upwind_field(field, 1.0, 0, dx, mad_q=0.0),
+            forward6,
+            rtol=1.0e-14,
+            atol=1.0e-14,
+        )
+        np.testing.assert_allclose(
+            diff1_upwind_field(field, -1.0, 0, dx, mad_q=0.0),
+            backward6,
+            rtol=1.0e-14,
+            atol=1.0e-14,
+        )
+
+    def test_upwind_broadcasts_spatial_coefficient_over_components(self):
+        n = 24
+        dx = 2.0 * np.pi / n
+        x = dx * jnp.arange(n, dtype=jnp.float64)
+        base = jnp.sin(x) + 0.15 * jnp.cos(3.0 * x)
+        scales = jnp.asarray([[1.0, -0.4, 2.1], [0.2, 1.3, -0.8]])
+        offsets = jnp.asarray([[0.0, 0.3, -0.7], [1.1, -0.2, 0.6]])
+        field = scales[..., None] * base + offsets[..., None]
+        coefficient = jnp.where(jnp.sin(x) > 0.4, 1.0, -1.0)
+
+        numerical = diff1_upwind_field(field, coefficient, 2, dx)
+        expected = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        diff1_upwind_field(field[i, j], coefficient, 0, dx)
+                        for j in range(field.shape[1])
+                    ]
+                )
+                for i in range(field.shape[0])
+            ]
+        )
+
+        self.assertEqual(numerical.shape, field.shape)
+        np.testing.assert_allclose(numerical, expected, rtol=1.0e-14, atol=1.0e-14)
+
+    def test_upwind_d4_d6_convergence_and_mad_blend(self):
+        def error(n, q, coefficient=1.0):
+            dx = 2.0 * np.pi / n
+            x = dx * jnp.arange(n, dtype=jnp.float64)
+            numerical = diff1_upwind_field(
+                jnp.sin(x), coefficient, 0, dx, mad_q=q
+            )
+            return float(jnp.max(jnp.abs(numerical - jnp.cos(x))))
+
+        d4_errors = np.asarray([error(n, 1.0) for n in (16, 32, 64)])
+        d6_errors = np.asarray([error(n, 0.0) for n in (16, 32, 64)])
+        d4_orders = np.log2(d4_errors[:-1] / d4_errors[1:])
+        d6_orders = np.log2(d6_errors[:-1] / d6_errors[1:])
+
+        self.assertTrue(np.all(d4_orders > 3.7), d4_orders)
+        self.assertTrue(np.all(d6_orders > 5.5), d6_orders)
+
+        n = 37
+        q = 0.35
+        dx = 2.0 * np.pi / n
+        x = dx * jnp.arange(n, dtype=jnp.float64)
+        field = jnp.sin(x) - 0.2 * jnp.cos(2.0 * x)
+        d4 = diff1_upwind_field(field, -1.0, 0, dx, mad_q=1.0)
+        d6 = diff1_upwind_field(field, -1.0, 0, dx, mad_q=0.0)
+        blended = diff1_upwind_field(field, -1.0, 0, dx, mad_q=q)
+        np.testing.assert_allclose(
+            blended,
+            q * d4 + (1.0 - q) * d6,
+            rtol=2.0e-14,
+            atol=2.0e-14,
+        )
+
+        # The coarse FMR operator uses q=(h/H)^4=1/16 for H=2h.  Since the
+        # D6 stencil has no fourth-order truncation term, this must reproduce
+        # the leading error of the fine-grid D4 operator for either bias.
+        for coefficient in (1.0, -1.0):
+            ratios = []
+            for coarse_n in (32, 64, 128):
+                coarse_error = error(coarse_n, 1.0 / 16.0, coefficient)
+                fine_error = error(2 * coarse_n, 1.0, coefficient)
+                ratios.append(coarse_error / fine_error)
+            self.assertLess(abs(ratios[-1] - 1.0), 1.0e-2, ratios)
+            self.assertLess(
+                abs(ratios[-1] - 1.0), abs(ratios[0] - 1.0), ratios
+            )
+
+    def test_upwind_periodic_rhs_operator_is_dissipative(self):
+        n = 64
+        dx = 2.0 * np.pi / n
+        field = jnp.asarray(
+            np.random.default_rng(2718).normal(size=n), dtype=jnp.float64
+        )
+
+        for mad_q in (1.0, 1.0 / 16.0, 0.0):
+            for coefficient in (1.7, -0.6):
+                derivative = diff1_upwind_field(
+                    field, coefficient, 0, dx, mad_q=mad_q
+                )
+                discrete_energy_rate = float(
+                    dx * jnp.vdot(field, coefficient * derivative)
+                )
+                self.assertLess(discrete_energy_rate, -1.0e-10)
+
+    def test_second_derivative_rejects_centered_d1_checkerboard_null_mode(self):
+        n = 32
+        dx = 0.2
+        checkerboard = ((-1.0) ** jnp.arange(n))[:, None, None]
+
+        composed = diff1_field(diff1_field(checkerboard, 0, dx), 0, dx)
+        dedicated = diff2_field(checkerboard, 0, dx)
+
+        np.testing.assert_allclose(composed, 0.0, rtol=0.0, atol=1.0e-12)
+        np.testing.assert_allclose(
+            dedicated,
+            -(16.0 / 3.0) * checkerboard / dx**2,
+            rtol=1.0e-12,
+            atol=1.0e-12,
+        )
 
     def test_first_derivative_1d_trigonometric(self):
         """

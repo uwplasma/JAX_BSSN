@@ -13,20 +13,22 @@ from jax import jit
 import jax
 import sys
 import os
-from pathlib import Path
 
 # Add the project root to the Python path
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
+sys.path.append('/home/christopherwoolford/Documents/Research/Numerical_Relativity/JAX_BSSN')
 
-from JAX_BSSN.evolve import rk4_step
-from JAX_BSSN.bssn import (
-    BSSNVariables, BSSNParameters,
-    evolve_conformal_metric, evolve_conformal_factor,
-    evolve_traceless_extrinsic_curvature, evolve_trace_extrinsic_curvature,
-    evolve_conformal_connection, evolve_lapse, evolve_shift,
-    compute_em_sources,
+from JAX_BSSN.evolution.time_evolve import enforce_algebraic_constraints, rk4_step
+from JAX_BSSN.bssn.conformal_connection import evolve_conformal_connection
+from JAX_BSSN.bssn.extrinsic_curvature import (
+    evolve_trace_extrinsic_curvature,
+    evolve_traceless_extrinsic_curvature,
 )
+from JAX_BSSN.bssn.shift_and_lapse import evolve_lapse, evolve_shift
+from JAX_BSSN.bssn.spatial_metric import (
+    evolve_conformal_factor,
+    evolve_conformal_metric,
+)
+from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 
 
 class TestRK4Evolution(unittest.TestCase):
@@ -47,7 +49,7 @@ class TestRK4Evolution(unittest.TestCase):
         
         # BSSN parameters
         self.params = BSSNParameters(
-            eta=2.0, f=2.0, g=0.75, dx=self.dx, dt=self.dt
+            eta=2.0, g=0.75, dx=self.dx, dt=self.dt
         )
     
     def create_manufactured_bssn_variables(self, t=0.0):
@@ -180,13 +182,13 @@ class TestRK4Evolution(unittest.TestCase):
         
         # Use small time step
         params_small = BSSNParameters(
-            eta=self.params.eta, f=self.params.f, g=self.params.g,
+            eta=self.params.eta, g=self.params.g,
             dx=self.params.dx, dt=0.001
         )
         
         # Test that we can call rk4_step without errors
         try:
-            vars_evolved = rk4_step(vars_initial, params_small, ko_sigma=0.01)
+            vars_evolved = rk4_step(vars_initial, params_small)
             
             # Check that the structure is preserved
             self.assertEqual(vars_evolved.conformal_metric.shape, (3, 3, self.n, self.n, self.n))
@@ -218,26 +220,6 @@ class TestRK4Evolution(unittest.TestCase):
         except Exception as e:
             self.fail(f"RK4 step structure test failed: {e}")
     
-    def test_em_source_construction(self):
-        """Test that electromagnetic source tensors can be constructed."""
-        n = 8
-        x = jnp.linspace(-1.0, 1.0, n)
-        X, Y, Z = jnp.meshgrid(x, x, x, indexing='ij')
-        r = jnp.sqrt(X**2 + Y**2 + Z**2) + 1e-3
-        Q = 1.0
-        E_flat = jnp.stack([Q * X / r**3, Q * Y / r**3, Q * Z / r**3], axis=0)
-        B_flat = jnp.zeros_like(E_flat)
-
-        conformal_metric = jnp.eye(3)[:, :, None, None, None] * jnp.ones((3, 3, n, n, n))
-        conformal_factor = jnp.ones((n, n, n))
-
-        rho, S_ij = compute_em_sources(conformal_metric, conformal_factor, E_flat, B_flat)
-
-        self.assertEqual(rho.shape, (n, n, n))
-        self.assertEqual(S_ij.shape, (3, 3, n, n, n))
-        self.assertTrue(jnp.all(rho >= 0.0))
-        self.assertTrue(jnp.all(jnp.isfinite(S_ij)))
-
     def test_bssn_manufactured_solution_consistency(self):
         """
         Test manufactured solutions with BSSN evolution using finite differences.
@@ -256,12 +238,17 @@ class TestRK4Evolution(unittest.TestCase):
         # Get analytical time derivatives
         dt_vars_analytical = self.analytical_time_derivatives(t)
         
-        # Use RK4 to evolve forward by small dt
         params_small_dt = BSSNParameters(
-            eta=self.params.eta, f=self.params.f, g=self.params.g, 
+            eta=self.params.eta, g=self.params.g,
             dx=self.params.dx, dt=dt_small
         )
-        vars_t_plus_dt_rk4 = rk4_step(vars_t, params_small_dt, ko_sigma=0.0)
+        vars_t = enforce_algebraic_constraints(vars_t)
+        # RK4 now enforces the BSSN algebraic constraints before the first RHS.
+        # Measure the time derivative from that projected state, not from the
+        # unconstrained manufactured metric.
+
+        # Use RK4 to evolve forward by small dt
+        vars_t_plus_dt_rk4 = rk4_step(vars_t, params_small_dt)
         
         # Compute numerical time derivatives from RK4 step
         dt_conformal_metric_rk4 = (vars_t_plus_dt_rk4.conformal_metric - vars_t.conformal_metric) / dt_small
@@ -320,7 +307,7 @@ class TestRK4Evolution(unittest.TestCase):
         for dt in dt_values:
             # Create parameters for this dt
             params = BSSNParameters(
-                eta=self.params.eta, f=self.params.f, g=self.params.g,
+                eta=self.params.eta, g=self.params.g,
                 dx=self.params.dx, dt=dt
             )
             
@@ -329,7 +316,7 @@ class TestRK4Evolution(unittest.TestCase):
             n_steps = int(t_final / dt)
             
             for _ in range(n_steps):
-                vars_current = rk4_step(vars_current, params, ko_sigma=0.0)
+                vars_current = rk4_step(vars_current, params)
             
             results.append(vars_current)
         
@@ -367,7 +354,7 @@ class TestRK4Evolution(unittest.TestCase):
         
         # Use small time step for stability
         params_stable = BSSNParameters(
-            eta=self.params.eta, f=self.params.f, g=self.params.g,
+            eta=self.params.eta, g=self.params.g,
             dx=self.params.dx, dt=0.0001
         )
         
@@ -376,7 +363,7 @@ class TestRK4Evolution(unittest.TestCase):
         n_steps = 20  # Smaller number of steps
         
         for step in range(n_steps):
-            vars_new = rk4_step(vars_current, params_stable, ko_sigma=0.01)
+            vars_new = rk4_step(vars_current, params_stable)
             
             # Check that solution remains finite
             self.assertTrue(jnp.all(jnp.isfinite(vars_new.conformal_metric)),
@@ -432,8 +419,6 @@ class TestRK4Evolution(unittest.TestCase):
 
 if __name__ == '__main__':
     # Configure JAX for testing
-    from JAX_BSSN import setup_jax_config
-    setup_jax_config(enable_x64=True, verbose=True)
+    jax.config.update("jax_enable_x64", True)  # Use double precision
     
     unittest.main(verbosity=2)
-

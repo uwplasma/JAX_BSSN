@@ -15,12 +15,28 @@ dependencies = [
     "jax",
     "jaxlib",
     "numpy",
-    "scipy",
     "matplotlib",
+    "openPMD-api",
+]
+
+[project.optional-dependencies]
+demos = [
+    "tqdm",
+]
+test = [
+    "pytest",
+    "scipy",
 ]
 
 [tool.setuptools]
-packages = ["JAX_BSSN"]
-
-[project.scripts]
-JAX_BSSN = "JAX_BSSN.__main__:main"
+packages = [
+    "JAX_BSSN",
+    "JAX_BSSN.bssn",
+    "JAX_BSSN.cartoon",
+    "JAX_BSSN.cartoon.axisymmetry",
+    "JAX_BSSN.cartoon.spherical_symmetry",
+    "JAX_BSSN.diagnostics",
+    "JAX_BSSN.evolution",
+    "JAX_BSSN.fmr",
+    "JAX_BSSN.utilities",
+]

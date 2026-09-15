@@ -5,7 +5,7 @@ from typing import List, Tuple
 from functools import partial
 import jax
 
-from JAX_BSSN.bssn import BSSNVariables, BSSNParameters
+from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 
 
 # NOTE : HAS NOT BEEN FULLY TESTED YET

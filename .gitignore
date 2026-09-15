@@ -7,3 +7,12 @@ tests/__pycache__/
 *.pyc
 *.ipynb
 *.gif
+*.tar.gz
+*.txt
+demos/linear_wave/output/
+docs/_build/
+PKG-INFO
+*.mp4
+*.json
+*.csv
+*.h5

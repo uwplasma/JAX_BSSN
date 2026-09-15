@@ -1,0 +1,122 @@
+:root {
+  --jb-bg: #050b1b;
+  --jb-blue-hot: #0757d9;
+  --jb-blue-bright: #1f72f2;
+  --jb-blue-ice: #a8c8ff;
+  --jb-blue-deep: #061f5c;
+  --jb-cyan: #55c7ff;
+  --jb-text: rgba(239, 246, 255, 0.94);
+}
+
+a,
+a:visited {
+  color: var(--jb-blue-bright);
+}
+
+a:hover {
+  color: var(--jb-cyan);
+  text-decoration: underline;
+}
+
+.sidebar-logo {
+  max-width: 100%;
+  max-height: 9rem;
+  object-fit: contain;
+}
+
+.hero,
+.hero-callout {
+  border-radius: 18px;
+  box-sizing: border-box;
+  color: var(--jb-text);
+  overflow: hidden;
+  padding: 2rem !important;
+  position: relative;
+  background:
+    radial-gradient(
+      120% 180% at 50% 120%,
+      rgba(0, 0, 0, 0.42) 0%,
+      rgba(0, 0, 0, 0.82) 58%,
+      rgba(0, 0, 0, 0.93) 100%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.05),
+      rgba(255, 255, 255, 0.01)
+    );
+  border: 1px solid rgba(74, 139, 255, 0.48);
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.5),
+    0 0 28px rgba(31, 114, 242, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.hero::before,
+.hero-callout::before {
+  content: "";
+  inset: -40%;
+  opacity: 0.92;
+  pointer-events: none;
+  position: absolute;
+}
+
+.hero::before {
+  background:
+    radial-gradient(
+      55% 55% at 18% 16%,
+      rgba(31, 114, 242, 0.9) 0%,
+      rgba(7, 87, 217, 0.48) 30%,
+      rgba(6, 31, 92, 0.25) 58%,
+      transparent 76%
+    ),
+    radial-gradient(
+      45% 60% at 72% 35%,
+      rgba(85, 199, 255, 0.2) 0%,
+      transparent 72%
+    );
+}
+
+.hero-callout {
+  border-color: rgba(85, 199, 255, 0.48);
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.5),
+    0 0 28px rgba(85, 199, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.hero-callout::before {
+  background:
+    radial-gradient(
+      55% 55% at 20% 20%,
+      rgba(85, 199, 255, 0.72) 0%,
+      rgba(31, 114, 242, 0.4) 32%,
+      rgba(6, 31, 92, 0.22) 60%,
+      transparent 78%
+    );
+}
+
+.hero > *,
+.hero-callout > * {
+  position: relative;
+  z-index: 1;
+}
+
+.hero > :is(p, ul, ol, dl, blockquote, h1, h2, h3, .hero-actions),
+.hero-callout > :is(p, ul, ol, dl, blockquote, h1, h2, h3, .hero-actions) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.hero p,
+.hero-callout p {
+  max-width: 76ch;
+}
+
+.sd-card {
+  border-color: rgba(31, 114, 242, 0.24);
+}
+
+.sd-card:hover {
+  border-color: rgba(31, 114, 242, 0.72);
+  box-shadow: 0 8px 24px rgba(7, 87, 217, 0.13);
+}

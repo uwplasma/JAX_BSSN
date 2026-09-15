@@ -12,7 +12,7 @@ from jax import jit
 from typing import Tuple
 import numpy as np
 
-from JAX_BSSN.derivatives import diff1_field, compute_all_derivatives
+from JAX_BSSN.evolution.derivatives import diff1_field, compute_all_derivatives
 
 # NOTE: FULLY TESTED AND FUNCTIONAL AS OF DEC 3RD 2025
 
@@ -20,7 +20,7 @@ from JAX_BSSN.derivatives import diff1_field, compute_all_derivatives
 @jit
 def invert_3x3_metric(metric: jnp.ndarray) -> jnp.ndarray:
     """
-    Invert a 3x3 metric tensor field.
+    Invert a symmetric positive-definite 3x3 metric tensor field.
     
     Args:
         metric: Array with shape (3, 3, ni, nj, nk) containing metric components
@@ -28,18 +28,46 @@ def invert_3x3_metric(metric: jnp.ndarray) -> jnp.ndarray:
     Returns:
         Inverse metric with same shape
     """
-    ni, nj, nk = metric.shape[2:]
+    g00 = metric[0, 0]
+    g01 = metric[0, 1]
+    g02 = metric[0, 2]
+    g11 = metric[1, 1]
+    g12 = metric[1, 2]
+    g22 = metric[2, 2]
 
-    flatten_g = metric.reshape(3, 3, -1)
-    # flatten the last three dimensions for vectorized inversion
+    # Cholesky factor metric = L L^T, written explicitly for the fixed
+    # three-dimensional tensor axes. The conformal metric is SPD by contract.
+    L00 = jnp.sqrt(g00)
+    L10 = g01 / L00
+    L20 = g02 / L00
+    L11 = jnp.sqrt(g11 - L10 * L10)
+    L21 = (g12 - L20 * L10) / L11
+    L22 = jnp.sqrt(g22 - L20 * L20 - L21 * L21)
 
-    vectorized_inv = jax.vmap(jnp.linalg.inv, in_axes=2, out_axes=2)
-    inv_flat = vectorized_inv(flatten_g)
-    # vmap over the last dimension to invert each 3x3 matrix
+    # Invert the lower-triangular factor, then form L^{-T} L^{-1}.
+    M00 = 1.0 / L00
+    M10 = -L10 / (L00 * L11)
+    M11 = 1.0 / L11
+    M20 = (L10 * L21 - L20 * L11) / (L00 * L11 * L22)
+    M21 = -L21 / (L11 * L22)
+    M22 = 1.0 / L22
 
-    inv_metric = inv_flat.reshape(3, 3, ni, nj, nk)
-    # Reshape back to original grid shape
-    
+    inv00 = M00 * M00 + M10 * M10 + M20 * M20
+    inv01 = M10 * M11 + M20 * M21
+    inv02 = M20 * M22
+    inv11 = M11 * M11 + M21 * M21
+    inv12 = M21 * M22
+    inv22 = M22 * M22
+
+    inv_metric = jnp.stack(
+        (
+            jnp.stack((inv00, inv01, inv02), axis=0),
+            jnp.stack((inv01, inv11, inv12), axis=0),
+            jnp.stack((inv02, inv12, inv22), axis=0),
+        ),
+        axis=0,
+    )
+
     return inv_metric
 
 
