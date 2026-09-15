@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import shutil
 
 import matplotlib
 
@@ -25,6 +26,18 @@ DEFAULT_INPUT = (
 DEFAULT_MOVIE_DIR = DEFAULT_INPUT.parent / "movies"
 FPS = 5
 DPI = 110
+
+
+def require_ffmpeg() -> str:
+    """Return the ffmpeg executable or raise a clear prerequisite error."""
+
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise RuntimeError(
+            "ffmpeg is required to render MP4 movies. Install ffmpeg and make "
+            "sure it is available on PATH."
+        )
+    return executable
 
 
 @dataclass(frozen=True)
@@ -188,6 +201,7 @@ def main():
     args = parse_args()
     if not args.input.is_file():
         raise FileNotFoundError(f"axisymmetric output not found: {args.input}")
+    require_ffmpeg()
     steps, x, z, specs, missing = _available_specs(args.input)
     if args.max_frames is not None:
         if args.max_frames < 1:

@@ -32,6 +32,9 @@ The supported physical examples are:
 4. Spherical Cartoon puncture
 5. Axisymmetric Cartoon puncture
 6. Axisymmetric boosted Bowen--York puncture
+7. Full 3D Bowen--York inspiral merger scaffold
+8. Axisymmetric Brill-wave collapse study
+9. Distorted black hole with a superposed Brill wave
 
 Each demo owns its initial data and run configuration. There is no generic
 simulation CLI or installed initial-data dispatcher.
@@ -78,6 +81,41 @@ render grouped BSSN movies with a tracked puncture position:
 cd demos/axisymmetric_bowen_york
 python axisymmetric_bowen_york.py
 python make_movies.py  # optional; requires ffmpeg
+```
+
+Run an equal-mass full-3D Bowen--York binary with opposite tangential momenta:
+
+```bash
+python demos/full_3d_puncture/inspiral_merger.py
+```
+
+Run a time-symmetric Brill wave and tune its amplitude toward collapse:
+
+```bash
+python demos/axisymmetric_cartoon_puncture/brill_wave_collapse.py
+python demos/axisymmetric_cartoon_puncture/make_brill_wave_movies.py
+```
+
+The movie helpers render H.264 MP4 files and require an `ffmpeg` executable on
+`PATH`.
+
+Run a Schwarzschild puncture with a superposed Brill-wave distortion:
+
+```bash
+python demos/axisymmetric_cartoon_puncture/distorted_black_hole.py
+python demos/axisymmetric_cartoon_puncture/make_distorted_black_hole_movies.py
+```
+
+The distorted-black-hole script uses a direct superposition of a puncture and
+Brill-wave conformal deformation as a ringdown scaffold. It writes constraint
+norms alongside the evolution so the quality of that approximation can be
+tracked while tuning the distortion amplitude.
+
+Render 2D slice movies from the full-3D inspiral-merger snapshots:
+
+```bash
+python demos/full_3d_puncture/inspiral_merger.py
+python demos/full_3d_puncture/make_inspiral_movies.py --half-width 12
 ```
 
 The initial-data phase solves the three-dimensional Cartesian Hamiltonian
