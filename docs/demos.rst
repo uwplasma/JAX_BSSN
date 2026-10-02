@@ -144,23 +144,15 @@ and should be checked by enlarging the domain. Because the initial solve is
 fully three-dimensional, its memory use is much larger than the compact
 Cartoon evolution that follows.
 
-Axisymmetric Brill and Teukolsky waves
---------------------------------------
+Axisymmetric Teukolsky waves
+----------------------------
 
 The axisymmetric wave demos share the same Cartoon evolution path and use 1+log
-gauge with zero shift. The Brill-wave executable now defaults to the off-center,
-negative-amplitude configuration discussed by Hilditch et al.:
+gauge with zero shift. The Teukolsky-wave entry points now provide one
+subcritical dispersive run and one supercritical collapsing run:
 
 .. code-block:: bash
 
-   python demos/axisymmetric_cartoon_puncture/brill_wave_collapse.py
-   python demos/axisymmetric_cartoon_puncture/make_brill_wave_movies.py
-
-The new Teukolsky-wave demos provide one robust supercritical run and one
-near-critical pair using the amplitudes reported in the same study:
-
-.. code-block:: bash
-
-   python demos/axisymmetric_cartoon_puncture/teukolsky_wave_common.py
+   python demos/axisymmetric_cartoon_puncture/teukolsky_wave_subcritical.py
+   python demos/axisymmetric_cartoon_puncture/teukolsky_wave_supercritical.py
    python demos/axisymmetric_cartoon_puncture/make_teukolsky_movies.py
-   python demos/axisymmetric_cartoon_puncture/teukolsky_wave_critical.py

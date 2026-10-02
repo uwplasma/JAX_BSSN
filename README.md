@@ -33,10 +33,8 @@ The supported physical examples are:
 5. Axisymmetric Cartoon puncture
 6. Axisymmetric boosted Bowen--York puncture
 7. Full 3D Bowen--York inspiral merger scaffold
-8. Axisymmetric Brill-wave collapse study
-9. Distorted black hole with a superposed Brill wave
-10. Axisymmetric Teukolsky-wave collapse study
-11. Axisymmetric Teukolsky-wave near-critical pair
+8. Axisymmetric Teukolsky-wave subcritical dispersal study
+9. Axisymmetric Teukolsky-wave supercritical collapse study
 
 Each demo owns its initial data and run configuration. There is no generic
 simulation CLI or installed initial-data dispatcher.
@@ -91,39 +89,16 @@ Run an equal-mass full-3D Bowen--York binary with opposite tangential momenta:
 python demos/full_3d_puncture/inspiral_merger.py
 ```
 
-Run a time-symmetric Brill wave and tune its amplitude toward collapse:
+Run the subcritical and supercritical axisymmetric Teukolsky-wave studies:
 
 ```bash
-python demos/axisymmetric_cartoon_puncture/brill_wave_collapse.py
-python demos/axisymmetric_cartoon_puncture/make_brill_wave_movies.py
-```
-
-The Brill-wave defaults now follow the off-center negative-amplitude setup that
-behaves more like the Teukolsky data in Hilditch et al. The run uses 1+log
-gauge with zero shift.
-
-Run the robust and near-critical axisymmetric Teukolsky-wave studies:
-
-```bash
-python demos/axisymmetric_cartoon_puncture/teukolsky_wave_common.py
+python demos/axisymmetric_cartoon_puncture/teukolsky_wave_subcritical.py
+python demos/axisymmetric_cartoon_puncture/teukolsky_wave_supercritical.py
 python demos/axisymmetric_cartoon_puncture/make_teukolsky_movies.py
-python demos/axisymmetric_cartoon_puncture/teukolsky_wave_critical.py
 ```
 
 The movie helpers render H.264 MP4 files and require an `ffmpeg` executable on
 `PATH`.
-
-Run a Schwarzschild puncture with a superposed Brill-wave distortion:
-
-```bash
-python demos/axisymmetric_cartoon_puncture/distorted_black_hole.py
-python demos/axisymmetric_cartoon_puncture/make_distorted_black_hole_movies.py
-```
-
-The distorted-black-hole script uses a direct superposition of a puncture and
-Brill-wave conformal deformation as a ringdown scaffold. It writes constraint
-norms alongside the evolution so the quality of that approximation can be
-tracked while tuning the distortion amplitude.
 
 Render 2D slice movies from the full-3D inspiral-merger snapshots:
 

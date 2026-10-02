@@ -1,4 +1,4 @@
-"""Evolve a robust axisymmetric Teukolsky-wave collapse case."""
+"""Shared helpers for axisymmetric Teukolsky-wave demos."""
 
 import argparse
 from pathlib import Path
@@ -17,20 +17,19 @@ from JAX_BSSN.bssn.tensor_algebra import (
 from JAX_BSSN.bssn.variables import BSSNVariables
 from JAX_BSSN.evolution.derivatives import diff1_field
 
-from brill_wave_common import (
-    BRILL_MAX_ITERATIONS,
-    BRILL_RELAXATION,
-    BRILL_TOLERANCE,
-    _reflect_even,
-    _reflect_odd,
+from axisymmetric_wave_common import (
+    ELLIPTIC_MAX_ITERATIONS,
+    ELLIPTIC_RELAXATION,
+    ELLIPTIC_TOLERANCE,
     axisymmetric_parameters,
     evolve_axisymmetric_demo,
     positive_rho_z_grid,
-    solve_brill_conformal_factor,
+    reflect_even,
+    reflect_odd,
+    solve_axisymmetric_conformal_factor,
 )
 
 
-AMPLITUDE = 0.0018
 RHO_MAX = 12.0
 Z_HALF_WIDTH = 12.0
 NUM_RADIAL_POINTS = 192
@@ -180,9 +179,9 @@ def build_teukolsky_wave_plane_data(
     amplitude: float,
     width: float,
     center_radius: float,
-    tolerance: float = BRILL_TOLERANCE,
-    max_iterations: int = BRILL_MAX_ITERATIONS,
-    relaxation: float = BRILL_RELAXATION,
+    tolerance: float = ELLIPTIC_TOLERANCE,
+    max_iterations: int = ELLIPTIC_MAX_ITERATIONS,
+    relaxation: float = ELLIPTIC_RELAXATION,
     verbose: bool = False,
 ) -> tuple[BSSNVariables, dict[str, object]]:
     """Return axisymmetric quadrupolar Teukolsky-wave data on the signed x-z plane."""
@@ -200,10 +199,10 @@ def build_teukolsky_wave_plane_data(
         )
     )
 
-    gamma_xx = _reflect_even(gamma_rho_rho_pos)[:, None, :]
-    gamma_xz = _reflect_odd(gamma_rho_z_pos)[:, None, :]
-    gamma_yy = _reflect_even(gamma_yy_pos)[:, None, :]
-    gamma_zz = _reflect_even(gamma_zz_pos)[:, None, :]
+    gamma_xx = reflect_even(gamma_rho_rho_pos)[:, None, :]
+    gamma_xz = reflect_odd(gamma_rho_z_pos)[:, None, :]
+    gamma_yy = reflect_even(gamma_yy_pos)[:, None, :]
+    gamma_zz = reflect_even(gamma_zz_pos)[:, None, :]
     shape = gamma_xx.shape
 
     conformal_metric = jnp.zeros((3, 3) + shape, dtype=gamma_xx.dtype)
@@ -234,7 +233,7 @@ def build_teukolsky_wave_plane_data(
         shift=jnp.zeros((3,) + shape, dtype=gamma_xx.dtype),
     )
     hamiltonian = compute_hamiltonian_constraint(provisional_vars, provisional_params)
-    psi_positive, residual_history = solve_brill_conformal_factor(
+    psi_positive, residual_history = solve_axisymmetric_conformal_factor(
         -0.5 * hamiltonian[num_radial_points:, 0, :],
         dx,
         tolerance=tolerance,
@@ -242,7 +241,7 @@ def build_teukolsky_wave_plane_data(
         relaxation=relaxation,
         verbose=verbose,
     )
-    conformal_factor = _reflect_even(psi_positive**-2)[:, None, :]
+    conformal_factor = reflect_even(psi_positive**-2)[:, None, :]
     plane_vars = BSSNVariables(
         conformal_metric=conformal_metric,
         conformal_factor=conformal_factor,
@@ -264,8 +263,8 @@ def build_teukolsky_wave_plane_data(
     }
 
 
-def run_teukolsky_wave_common(
-    amplitude: float = AMPLITUDE,
+def run_teukolsky_wave_case(
+    amplitude: float,
     rho_max: float = RHO_MAX,
     z_half_width: float = Z_HALF_WIDTH,
     num_radial_points: int = NUM_RADIAL_POINTS,
@@ -275,10 +274,12 @@ def run_teukolsky_wave_common(
     snapshot_count: int = SNAPSHOT_COUNT,
     width: float = WIDTH,
     center_radius: float = CENTER_RADIUS,
+    output_stem: str = "teukolsky_wave",
+    progress_label: str = "Evolving Teukolsky wave",
     output_dir: str | Path = "output",
-    tolerance: float = BRILL_TOLERANCE,
-    max_iterations: int = BRILL_MAX_ITERATIONS,
-    relaxation: float = BRILL_RELAXATION,
+    tolerance: float = ELLIPTIC_TOLERANCE,
+    max_iterations: int = ELLIPTIC_MAX_ITERATIONS,
+    relaxation: float = ELLIPTIC_RELAXATION,
     show_progress: bool = True,
 ):
     """Build and evolve one axisymmetric Teukolsky wave with zero shift."""
@@ -306,13 +307,13 @@ def run_teukolsky_wave_common(
         final_time=final_time,
         snapshot_count=snapshot_count,
         output_dir=output_dir,
-        output_stem="teukolsky_wave_common",
-        progress_label="Evolving Teukolsky wave",
+        output_stem=output_stem,
+        progress_label=progress_label,
         zero_shift=1,
         show_progress=show_progress,
     )
 
-    residual_path = Path(output_dir) / "teukolsky_wave_initial_residual.txt"
+    residual_path = Path(output_dir) / f"{output_stem}_initial_residual.txt"
     with residual_path.open("w", encoding="utf-8") as residual_file:
         residual_file.write("# iteration max_update\n")
         for iteration, residual in enumerate(initial_data["residual_history"]):
@@ -326,48 +327,3 @@ def run_teukolsky_wave_common(
         "center_radius": center_radius,
         "residual_path": residual_path,
     }
-
-
-def _parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--amplitude", type=float, default=AMPLITUDE)
-    parser.add_argument("--rho-max", type=float, default=RHO_MAX)
-    parser.add_argument("--z-half-width", type=float, default=Z_HALF_WIDTH)
-    parser.add_argument("--num-rho", type=int, default=NUM_RADIAL_POINTS)
-    parser.add_argument("--num-z", type=int, default=NUM_Z_POINTS)
-    parser.add_argument("--cfl", type=float, default=CFL)
-    parser.add_argument("--final-time", type=float, default=FINAL_TIME)
-    parser.add_argument("--snapshots", type=int, default=SNAPSHOT_COUNT)
-    parser.add_argument("--width", type=float, default=WIDTH)
-    parser.add_argument("--center-radius", type=float, default=CENTER_RADIUS)
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
-    parser.add_argument("--tolerance", type=float, default=BRILL_TOLERANCE)
-    parser.add_argument("--max-iterations", type=int, default=BRILL_MAX_ITERATIONS)
-    parser.add_argument("--relaxation", type=float, default=BRILL_RELAXATION)
-    parser.add_argument("--no-progress", action="store_true")
-    return parser.parse_args()
-
-
-def main():
-    args = _parse_args()
-    run_teukolsky_wave_common(
-        amplitude=args.amplitude,
-        rho_max=args.rho_max,
-        z_half_width=args.z_half_width,
-        num_radial_points=args.num_rho,
-        num_z_points=args.num_z,
-        cfl=args.cfl,
-        final_time=args.final_time,
-        snapshot_count=args.snapshots,
-        width=args.width,
-        center_radius=args.center_radius,
-        output_dir=args.output_dir,
-        tolerance=args.tolerance,
-        max_iterations=args.max_iterations,
-        relaxation=args.relaxation,
-        show_progress=not args.no_progress,
-    )
-
-
-if __name__ == "__main__":
-    main()

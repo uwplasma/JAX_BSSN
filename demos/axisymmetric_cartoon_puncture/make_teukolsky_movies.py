@@ -9,7 +9,7 @@ from make_movies import DPI, FPS, _available_specs, render_movie, require_ffmpeg
 
 
 DEFAULT_INPUT = (
-    Path(__file__).resolve().parent / "output" / "teukolsky_wave_common.h5"
+    Path(__file__).resolve().parent / "output" / "teukolsky_wave_supercritical.h5"
 )
 DEFAULT_MOVIE_DIR = DEFAULT_INPUT.parent / "teukolsky_movies"
 
