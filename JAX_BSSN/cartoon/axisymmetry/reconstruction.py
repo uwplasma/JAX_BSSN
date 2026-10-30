@@ -3,7 +3,8 @@
 The evolved state lives on the ``y = 0`` half-plane.  Four negative-``x``
 entries are parity ghosts, while the remaining samples are positive radial
 half-cell centres.  Reconstruction produces the nine Cartesian ``y`` planes
-needed by the existing fourth-order derivative operators.
+needed by the existing fourth-order derivative operators, by interpolating each
+profile along the positive radius and rotating it about the z axis.
 """
 
 import math
@@ -12,6 +13,13 @@ import jax.numpy as jnp
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.cartoon.interpolation import lagrange6_nonperiodic
+from JAX_BSSN.cartoon.symmetry import (
+    SCALAR_PARITY,
+    map_bssn_fields,
+    reflect,
+    tensor_parity,
+    vector_parity,
+)
 from JAX_BSSN.evolution.boundaries import PERIODIC_BC, SOMMERFELD_BC
 
 
@@ -23,37 +31,23 @@ AXISYMMETRIC_OUTER_BUFFER_CELLS = 3
 VECTOR_RADIAL_REFLECTION_PARITY = (-1.0, -1.0, 1.0)
 
 
-def _vector_parity(dtype):
-    return jnp.asarray(VECTOR_RADIAL_REFLECTION_PARITY, dtype=dtype)
-
-
-def _tensor_parity(dtype):
-    parity = _vector_parity(dtype)
-    return parity[:, None] * parity[None, :]
-
-
-def _reflect_inner_ghosts(positive_plane, parity):
-    parity = jnp.asarray(parity, dtype=positive_plane.dtype)
-    parity = parity.reshape(parity.shape + (1, 1))
-    ghosts = jnp.flip(
-        positive_plane[..., :AXISYMMETRIC_GHOST_CELLS, :], axis=-2
-    ) * parity
-    return jnp.concatenate((ghosts, positive_plane), axis=-2)
-
-
-def _reflect_full_plane(positive_plane, parity):
-    parity = jnp.asarray(parity, dtype=positive_plane.dtype)
-    parity = parity.reshape(parity.shape + (1, 1))
-    negative = jnp.flip(positive_plane, axis=-2) * parity
-    return jnp.concatenate((negative, positive_plane), axis=-2)
+def _map_fields(vars, transform):
+    return map_bssn_fields(vars, transform, VECTOR_RADIAL_REFLECTION_PARITY)
 
 
 def _compact_field(positive_plane, parity):
-    return jnp.expand_dims(_reflect_inner_ghosts(positive_plane, parity), axis=-2)
+    """Attach the parity ghosts and restore the singleton y plane."""
+
+    ghosted = reflect(
+        positive_plane, parity, axis=-2, count=AXISYMMETRIC_GHOST_CELLS
+    )
+    return jnp.expand_dims(ghosted, axis=-2)
 
 
 def _expanded_field(positive_plane, parity):
-    return jnp.expand_dims(_reflect_full_plane(positive_plane, parity), axis=-2)
+    """Mirror the whole positive radius onto the complete signed x-z plane."""
+
+    return jnp.expand_dims(reflect(positive_plane, parity, axis=-2), axis=-2)
 
 
 def _reference_plane(field):
@@ -63,7 +57,9 @@ def _reference_plane(field):
 
 
 def _positive_plane(field):
-    return _reference_plane(field)[..., AXISYMMETRIC_GHOST_CELLS :, :]
+    """Return the authoritative positive-rho half of the reference plane."""
+
+    return _reference_plane(field)[..., AXISYMMETRIC_GHOST_CELLS:, :]
 
 
 def validate_axisymmetric_grid(
@@ -124,50 +120,26 @@ def compact_axisymmetric_state(vars: BSSNVariables) -> BSSNVariables:
         raise ValueError("input must be an even-length signed x plane with y=1")
     positive = slice(nx // 2, None)
 
-    def scalar(field):
-        return _compact_field(field[:, 0, :][positive, :], 1.0)
-
-    def vector(field):
-        return _compact_field(
-            field[:, :, 0, :][:, positive, :], _vector_parity(field.dtype)
-        )
-
-    def tensor(field):
-        return _compact_field(
-            field[:, :, :, 0, :][:, :, positive, :], _tensor_parity(field.dtype)
-        )
-
-    return BSSNVariables(
-        conformal_metric=tensor(vars.conformal_metric),
-        conformal_factor=scalar(vars.conformal_factor),
-        traceless_K=tensor(vars.traceless_K),
-        trace_K=scalar(vars.trace_K),
-        conformal_connection=vector(vars.conformal_connection),
-        lapse=scalar(vars.lapse),
-        shift=vector(vars.shift),
+    return _map_fields(
+        vars,
+        lambda field, parity: _compact_field(
+            _reference_plane(field)[..., positive, :], parity
+        ),
     )
 
 
 def fill_axisymmetric_ghosts(vars: BSSNVariables) -> BSSNVariables:
-    """Replace the four negative-rho entries using rotation-by-pi parity."""
+    """Replace the four negative-rho entries using rotation-by-pi parity.
 
-    def scalar(field):
-        return _compact_field(_positive_plane(field), 1.0)
+    Unlike spherical symmetry, axisymmetry about z forbids no component on the
+    reference plane: ``gamma_xz`` is physical for a deformed spacetime, and the
+    y components carry the rotational twist.  Parity is the whole of the
+    symmetry condition here.
+    """
 
-    def vector(field):
-        return _compact_field(_positive_plane(field), _vector_parity(field.dtype))
-
-    def tensor(field):
-        return _compact_field(_positive_plane(field), _tensor_parity(field.dtype))
-
-    return BSSNVariables(
-        conformal_metric=tensor(vars.conformal_metric),
-        conformal_factor=scalar(vars.conformal_factor),
-        traceless_K=tensor(vars.traceless_K),
-        trace_K=scalar(vars.trace_K),
-        conformal_connection=vector(vars.conformal_connection),
-        lapse=scalar(vars.lapse),
-        shift=vector(vars.shift),
+    return _map_fields(
+        vars,
+        lambda field, parity: _compact_field(_positive_plane(field), parity),
     )
 
 
@@ -195,71 +167,85 @@ def _outer_buffer(reference, asymptotic, params):
     return jnp.concatenate((reference, buffer), axis=-2)
 
 
-def _support_geometry(reference, params):
-    nx = reference.shape[-2]
-    dtype = reference.dtype
+def _support_geometry(num_x, params, dtype):
+    """Return the support cylindrical radius and its x and y coordinates."""
+
     dx = jnp.asarray(params.dx, dtype=dtype)
-    x = (jnp.arange(nx, dtype=dtype) - 3.5) * dx
-    y = (jnp.arange(AXISYMMETRIC_SUPPORT_SIZE, dtype=dtype) - 4.0) * params.dx
-    X = x[:, None]
-    Y = y[None, :]
-    rho = jnp.sqrt(X**2 + Y**2)
-    q = rho / dx + 3.5
-    cosine = X / rho
-    sine = Y / rho
-    return q, cosine, sine
+    x = (jnp.arange(num_x, dtype=dtype) - 3.5) * dx
+    y = (jnp.arange(AXISYMMETRIC_SUPPORT_SIZE, dtype=dtype) - 4.0) * dx
+    X, Y = jnp.broadcast_arrays(x[:, None], y[None, :])
+
+    return jnp.sqrt(X**2 + Y**2), X, Y
 
 
-def _rotation_matrix(cosine, sine, dtype):
-    zeros = jnp.zeros_like(cosine)
-    ones = jnp.ones_like(cosine)
-    rows = (
-        jnp.stack((cosine, -sine, zeros), axis=0),
-        jnp.stack((sine, cosine, zeros), axis=0),
-        jnp.stack((zeros, zeros, ones), axis=0),
+def radial_interpolate(
+    positive_plane: jnp.ndarray,
+    rho: jnp.ndarray,
+    params: BSSNParameters,
+    parity: float = SCALAR_PARITY,
+    asymptotic_value: float = 0.0,
+) -> jnp.ndarray:
+    """Interpolate a positive-rho reference-plane profile at arbitrary radii.
+
+    The positive half-plane is the only authoritative data.  Samples through
+    the axis come from its rotation-by-pi parity reflection, and samples past
+    the outer face come from a fixed-z 1/r continuation, so no target ever
+    extrapolates.  ``parity`` carries the component axes, so a whole vector or
+    tensor is interpolated in one call.
+    """
+
+    plane = reflect(
+        positive_plane, parity, axis=-2, count=AXISYMMETRIC_GHOST_CELLS
     )
-    return jnp.stack(rows, axis=0).astype(dtype)[..., None]
+    source = _outer_buffer(plane, asymptotic_value, params)
+    q = rho / jnp.asarray(params.dx, dtype=rho.dtype) + AXISYMMETRIC_GHOST_CELLS - 0.5
 
-
-def _rotate_vector(vector, cosine, sine, dtype):
-    """Apply the sparse z-axis rotation without batched small matrix products."""
-    c = jnp.asarray(cosine, dtype=dtype)[..., None]
-    s = jnp.asarray(sine, dtype=dtype)[..., None]
-    return jnp.stack((c * vector[0] - s * vector[1],
-                      s * vector[0] + c * vector[1], vector[2]))
-
-
-def _rotate_tensor(tensor, cosine, sine, dtype):
-    """Compute R T R^T for any rank-two tensor, including nonsymmetric moments."""
-    c = jnp.asarray(cosine, dtype=dtype)[..., None]
-    s = jnp.asarray(sine, dtype=dtype)[..., None]
-    left = jnp.stack((c * tensor[0] - s * tensor[1],
-                      s * tensor[0] + c * tensor[1], tensor[2]))
-    return jnp.stack((c * left[:, 0] - s * left[:, 1],
-                      s * left[:, 0] + c * left[:, 1], left[:, 2]), axis=1)
-
-
-def _interpolate_scalar(field, asymptotic, params):
-    reference = _reference_plane(field)
-    source = _outer_buffer(reference, asymptotic, params)
-    q, _, _ = _support_geometry(reference, params)
     return lagrange6_nonperiodic(source, q, axis=-2)
 
 
-def _interpolate_vector(field, asymptotic, params):
-    reference = _reference_plane(field)
-    source = _outer_buffer(reference, asymptotic, params)
-    q, cosine, sine = _support_geometry(reference, params)
-    radial_values = lagrange6_nonperiodic(source, q, axis=-2)
-    return _rotate_vector(radial_values, cosine, sine, field.dtype)
+def transformation_matrix(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    """Return Lambda^i_jbar from the reference half-plane to the point (x, y).
+
+    The reference frame sits at ybar = 0, so the columns of Lambda are the
+    cylindrical radial, azimuthal and axial unit vectors in Cartesian
+    components -- that is, a rotation by phi about z.  It transforms
+    contravariant and covariant indices alike: ``v^i = Lambda^i_abar v^abar``
+    and ``T_ij = Lambda_iabar Lambda_jbbar T_abarbbar``.
+
+    The support grid never samples rho = 0, since its x coordinates are
+    half-cell offset, but the rho = 0 branch keeps a stray call from injecting
+    NaN into a jitted RHS.
+    """
+
+    x, y = jnp.broadcast_arrays(jnp.asarray(x), jnp.asarray(y))
+
+    rho = jnp.sqrt(x**2 + y**2)
+    on_axis = rho <= 0.0
+    safe_rho = jnp.where(on_axis, jnp.ones_like(rho), rho)
+    cosine = jnp.where(on_axis, jnp.ones_like(x), x / safe_rho)
+    sine = jnp.where(on_axis, jnp.zeros_like(x), y / safe_rho)
+
+    zero = jnp.zeros_like(x)
+    one = jnp.ones_like(x)
+
+    return jnp.stack(
+        (
+            jnp.stack((cosine, sine, zero)),
+            jnp.stack((-sine, cosine, zero)),
+            jnp.stack((zero, zero, one)),
+        ),
+        axis=1,
+    )
 
 
-def _interpolate_tensor(field, asymptotic, params):
-    reference = _reference_plane(field)
-    source = _outer_buffer(reference, asymptotic, params)
-    q, cosine, sine = _support_geometry(reference, params)
-    radial_values = lagrange6_nonperiodic(source, q, axis=-2)
-    return _rotate_tensor(radial_values, cosine, sine, field.dtype)
+def _rotate_vector(rotation, reference_vector):
+    return jnp.einsum("ij...,j...->i...", rotation, reference_vector)
+
+
+def _rotate_tensor(rotation, reference_tensor):
+    return jnp.einsum(
+        "ia...,jb...,ab...->ij...", rotation, rotation, reference_tensor
+    )
 
 
 def reconstruct_axisymmetric_support(
@@ -267,80 +253,89 @@ def reconstruct_axisymmetric_support(
 ) -> BSSNVariables:
     """Interpolate the reference plane and rotate it onto nine y planes."""
 
+    dtype = vars.lapse.dtype
+    num_x = vars.conformal_factor.shape[0]
+    rho, X, Y = _support_geometry(num_x, params, dtype)
+    # The rotation is independent of z; the trailing axis lets it broadcast
+    # against the interpolated (..., nx, 9, nz) support.
+    rotation = transformation_matrix(X[..., None], Y[..., None])
+
     flat_metric = jnp.eye(3, dtype=vars.conformal_metric.dtype)
+    vector = vector_parity(VECTOR_RADIAL_REFLECTION_PARITY, dtype)
+    tensor = tensor_parity(VECTOR_RADIAL_REFLECTION_PARITY, dtype)
+
+    def profile(field, parity, asymptotic_value):
+        return radial_interpolate(
+            _positive_plane(field), rho, params, parity, asymptotic_value
+        )
+
     return BSSNVariables(
-        conformal_metric=_interpolate_tensor(
-            vars.conformal_metric, flat_metric, params
+        conformal_metric=_rotate_tensor(
+            rotation, profile(vars.conformal_metric, tensor, flat_metric)
         ),
-        conformal_factor=_interpolate_scalar(vars.conformal_factor, 1.0, params),
-        traceless_K=_interpolate_tensor(vars.traceless_K, jnp.zeros((3, 3)), params),
-        trace_K=_interpolate_scalar(vars.trace_K, 0.0, params),
-        conformal_connection=_interpolate_vector(
-            vars.conformal_connection, jnp.zeros(3), params
+        conformal_factor=profile(vars.conformal_factor, SCALAR_PARITY, 1.0),
+        traceless_K=_rotate_tensor(
+            rotation, profile(vars.traceless_K, tensor, jnp.zeros((3, 3)))
         ),
-        lapse=_interpolate_scalar(vars.lapse, 1.0, params),
-        shift=_interpolate_vector(vars.shift, jnp.zeros(3), params),
+        trace_K=profile(vars.trace_K, SCALAR_PARITY, 0.0),
+        conformal_connection=_rotate_vector(
+            rotation,
+            profile(vars.conformal_connection, vector, jnp.zeros(3)),
+        ),
+        lapse=profile(vars.lapse, SCALAR_PARITY, 1.0),
+        shift=_rotate_vector(
+            rotation, profile(vars.shift, vector, jnp.zeros(3))
+        ),
     )
 
 
-def _project_scalar(field):
-    positive = field[AXISYMMETRIC_GHOST_CELLS :, AXISYMMETRIC_CENTER, :]
-    return _compact_field(positive, 1.0)
-
-
-def _project_vector(field):
-    positive = field[:, AXISYMMETRIC_GHOST_CELLS :, AXISYMMETRIC_CENTER, :]
-    return _compact_field(positive, _vector_parity(field.dtype))
-
-
-def _project_tensor(field):
-    positive = field[:, :, AXISYMMETRIC_GHOST_CELLS :, AXISYMMETRIC_CENTER, :]
-    return _compact_field(positive, _tensor_parity(field.dtype))
+def _project_support_field(field, parity):
+    positive = field[..., AXISYMMETRIC_GHOST_CELLS:, AXISYMMETRIC_CENTER, :]
+    return _compact_field(positive, parity)
 
 
 def project_axisymmetric_rhs(rhs: BSSNVariables) -> BSSNVariables:
     """Retain positive-rho reference-plane RHS values and rebuild ghosts."""
 
-    return BSSNVariables(
-        conformal_metric=_project_tensor(rhs.conformal_metric),
-        conformal_factor=_project_scalar(rhs.conformal_factor),
-        traceless_K=_project_tensor(rhs.traceless_K),
-        trace_K=_project_scalar(rhs.trace_K),
-        conformal_connection=_project_vector(rhs.conformal_connection),
-        lapse=_project_scalar(rhs.lapse),
-        shift=_project_vector(rhs.shift),
+    return _map_fields(rhs, _project_support_field)
+
+
+def project_axisymmetric_scalar(field: jnp.ndarray) -> jnp.ndarray:
+    """Project a scalar support field into compact parity-filled storage."""
+
+    return _project_support_field(field, SCALAR_PARITY)
+
+
+def project_axisymmetric_vector(field: jnp.ndarray) -> jnp.ndarray:
+    """Project a Cartesian vector support field into compact storage."""
+
+    return _project_support_field(
+        field, vector_parity(VECTOR_RADIAL_REFLECTION_PARITY, field.dtype)
     )
 
 
 def expand_axisymmetric_plane(vars: BSSNVariables) -> BSSNVariables:
     """Expand compact fields to the complete signed ``x-z`` plane."""
 
-    def scalar(field):
-        return _expanded_field(_positive_plane(field), 1.0)
-
-    def vector(field):
-        return _expanded_field(_positive_plane(field), _vector_parity(field.dtype))
-
-    def tensor(field):
-        return _expanded_field(_positive_plane(field), _tensor_parity(field.dtype))
-
-    return BSSNVariables(
-        conformal_metric=tensor(vars.conformal_metric),
-        conformal_factor=scalar(vars.conformal_factor),
-        traceless_K=tensor(vars.traceless_K),
-        trace_K=scalar(vars.trace_K),
-        conformal_connection=vector(vars.conformal_connection),
-        lapse=scalar(vars.lapse),
-        shift=vector(vars.shift),
+    return _map_fields(
+        vars,
+        lambda field, parity: _expanded_field(_positive_plane(field), parity),
     )
 
 
-def _expand_axisymmetric_scalar(field):
-    return _expanded_field(_positive_plane(field), 1.0)
+def expand_axisymmetric_scalar(field: jnp.ndarray) -> jnp.ndarray:
+    """Expand a compact even scalar onto the complete signed ``x-z`` plane."""
+
+    return _expanded_field(_positive_plane(field), SCALAR_PARITY)
 
 
-def _expand_axisymmetric_vector(field):
-    return _expanded_field(_positive_plane(field), _vector_parity(field.dtype))
+def expand_axisymmetric_vector(field: jnp.ndarray) -> jnp.ndarray:
+    """Expand a compact Cartesian vector onto the signed ``x-z`` plane."""
+
+    return _expanded_field(
+        _positive_plane(field),
+        vector_parity(VECTOR_RADIAL_REFLECTION_PARITY, field.dtype),
+    )
 
 
 __all__ = [
@@ -350,8 +345,14 @@ __all__ = [
     "AXISYMMETRIC_SUPPORT_SIZE",
     "compact_axisymmetric_state",
     "expand_axisymmetric_plane",
+    "expand_axisymmetric_scalar",
+    "expand_axisymmetric_vector",
     "fill_axisymmetric_ghosts",
     "project_axisymmetric_rhs",
+    "project_axisymmetric_scalar",
+    "project_axisymmetric_vector",
+    "radial_interpolate",
     "reconstruct_axisymmetric_support",
+    "transformation_matrix",
     "validate_axisymmetric_grid",
 ]

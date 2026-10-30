@@ -12,9 +12,15 @@ from JAX_BSSN.cartoon.axisymmetry.evolution import (
 from JAX_BSSN.cartoon.axisymmetry.reconstruction import (
     compact_axisymmetric_state,
     expand_axisymmetric_plane,
+    expand_axisymmetric_scalar,
+    expand_axisymmetric_vector,
     fill_axisymmetric_ghosts,
     project_axisymmetric_rhs,
+    project_axisymmetric_scalar,
+    project_axisymmetric_vector,
+    radial_interpolate,
     reconstruct_axisymmetric_support,
+    transformation_matrix,
     validate_axisymmetric_grid,
 )
 
@@ -26,8 +32,14 @@ __all__ = [
     "compute_axisymmetric_constraints",
     "compute_axisymmetric_rhs",
     "expand_axisymmetric_plane",
+    "expand_axisymmetric_scalar",
+    "expand_axisymmetric_vector",
     "fill_axisymmetric_ghosts",
     "project_axisymmetric_rhs",
+    "project_axisymmetric_scalar",
+    "project_axisymmetric_vector",
+    "radial_interpolate",
     "reconstruct_axisymmetric_support",
+    "transformation_matrix",
     "validate_axisymmetric_grid",
 ]

@@ -68,7 +68,13 @@ def compute_cartoon_constraint_norms(
 def compute_spherical_symmetry_norms(
     vars: BSSNVariables, exclude_outer: int = 0
 ) -> dict:
-    """Measure reference-axis components forbidden by spherical symmetry."""
+    """Measure reference-axis components forbidden by spherical symmetry.
+
+    ``enforce_spherical_symmetry`` zeroes these components at every RK4 stage,
+    so a state that has been through the stepper reports exactly zero.  The
+    norms are a check on initial data and on reconstruction inputs, not on the
+    stepper itself.
+    """
 
     def physical_radius(field):
         radius = cartoon_positive_radius(field)

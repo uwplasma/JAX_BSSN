@@ -17,9 +17,11 @@ from JAX_BSSN.cartoon.spherical_symmetry import (
     compute_cartoon_constraints,
     compute_cartoon_rhs,
     compute_spherical_symmetry_norms,
+    enforce_spherical_symmetry,
     expand_cartoon_axis,
-    fill_cartoon_ghosts,
+    radial_interpolate,
     reconstruct_cartoon_support,
+    transformation_matrix,
     validate_cartoon_grid,
 )
 from JAX_BSSN.evolution.boundaries import PERIODIC_BC, SOMMERFELD_BC
@@ -167,7 +169,7 @@ def test_compact_cartoon_state_reflects_all_component_parities():
             )
 
 
-def test_fill_cartoon_ghosts_overwrites_corrupted_values():
+def test_enforce_spherical_symmetry_overwrites_corrupted_ghosts():
     num_radial_points = 8
     vars = _empty_variables(num_radial_points)
     radius = _positive_radius(num_radial_points, 0.2)
@@ -177,16 +179,105 @@ def test_fill_cartoon_ghosts_overwrites_corrupted_values():
     )
     vars = vars._replace(lapse=lapse.at[:4, 0, 0].set(-99.0), shift=shift)
 
-    filled = fill_cartoon_ghosts(vars)
+    enforced = enforce_spherical_symmetry(vars)
     np.testing.assert_array_equal(
-        filled.lapse[:4, 0, 0], np.asarray((1.0 + radius[:4])[::-1])
+        enforced.lapse[:4, 0, 0], np.asarray((1.0 + radius[:4])[::-1])
+    )
+    # The radial shift keeps its odd reflection; the transverse components are
+    # forbidden by spherical symmetry and are projected away everywhere.
+    np.testing.assert_array_equal(
+        enforced.shift[0, :4, 0, 0], -np.asarray(radius[:4][::-1])
     )
     np.testing.assert_array_equal(
-        filled.shift[0, :4, 0, 0], -np.asarray(radius[:4][::-1])
+        enforced.shift[0, 4:, 0, 0], np.asarray(radius)
     )
+    np.testing.assert_array_equal(enforced.shift[1:], np.zeros((2, 12, 1, 1)))
+
+
+def test_enforce_spherical_symmetry_projects_the_forbidden_components():
+    num_radial_points, dx = 8, 0.2
+    vars = _empty_variables(num_radial_points)
+    radius = _positive_radius(num_radial_points, dx)
+    corruption = jnp.ones((3, 3, num_radial_points))
+    metric = _set_positive(
+        vars.conformal_metric,
+        corruption.at[0, 0].set(1.0 + radius**2)
+        .at[1, 1].set(2.0 + radius**2)
+        .at[2, 2].set(20.0 + radius**2),
+    )
+    vars = vars._replace(
+        conformal_metric=metric,
+        traceless_K=_set_positive(vars.traceless_K, corruption),
+        conformal_connection=_set_positive(
+            vars.conformal_connection, jnp.ones((3, num_radial_points))
+        ),
+    )
+
+    assert max(
+        float(value)
+        for value in compute_spherical_symmetry_norms(vars).values()
+    ) > 0.0
+
+    enforced = enforce_spherical_symmetry(vars)
+    assert all(
+        float(value) == 0.0
+        for value in compute_spherical_symmetry_norms(enforced).values()
+    )
+    # The yy entry stays authoritative for the tangential pair.
     np.testing.assert_array_equal(
-        filled.shift[1, :4, 0, 0], 2.0 * np.asarray(radius[:4][::-1])
+        enforced.conformal_metric[2, 2, 4:, 0, 0],
+        np.asarray(2.0 + radius**2),
     )
+
+
+def test_radial_interpolate_is_exact_for_quintics_and_honours_parity():
+    num_radial_points, dx = 12, 0.2
+    radius = _positive_radius(num_radial_points, dx)
+    targets = jnp.linspace(0.02, float(radius[-4]), 50)
+
+    even = 1.0 + radius**2 - 0.3 * radius**4
+    np.testing.assert_allclose(
+        radial_interpolate(even, targets, dx, 1.0, 1.0),
+        1.0 + targets**2 - 0.3 * targets**4,
+        atol=3.0e-13,
+    )
+    # An odd profile only reproduces near the origin if the reflected ghosts
+    # carry the sign flip.
+    np.testing.assert_allclose(
+        radial_interpolate(radius**3, targets, dx, -1.0, 0.0),
+        targets**3,
+        atol=3.0e-13,
+    )
+
+
+def test_transformation_matrix_is_a_rotation_onto_the_radial_direction():
+    num_radial_points, dx = 12, 0.2
+    X, Y, Z = _support_coordinates(num_radial_points, dx)
+    rotation = transformation_matrix(X, Y, Z)
+
+    product = jnp.einsum("ia...,ja...->ij...", rotation, rotation)
+    np.testing.assert_allclose(
+        product,
+        jnp.broadcast_to(jnp.eye(3)[:, :, None, None, None], product.shape),
+        atol=1.0e-14,
+    )
+    r = jnp.sqrt(X**2 + Y**2 + Z**2)
+    np.testing.assert_array_equal(
+        rotation[:, 0], np.asarray(jnp.stack((X, Y, Z)) / r)
+    )
+    # The reference axis is its own image, exactly, which is what keeps the
+    # projected centerline free of rotation roundoff.
+    assert bool(
+        jnp.all(
+            rotation[:, :, CARTOON_GHOST_CELLS:, CARTOON_CENTER, CARTOON_CENTER]
+            == jnp.eye(3)[:, :, None]
+        )
+    )
+    # The support never samples rho = 0, but the guarded branch stays a rotation.
+    polar = transformation_matrix(
+        jnp.asarray(0.0), jnp.asarray(0.0), jnp.asarray(0.3)
+    )
+    np.testing.assert_allclose(polar @ polar.T, np.eye(3), atol=1.0e-15)
 
 
 def test_scalar_cartoon_support_reconstruction():
@@ -269,7 +360,8 @@ def test_tensor_reconstruction_uses_yy_without_tangential_averaging():
         .at[1, 1].set(2.0 + radius**2)
         .at[2, 2].set(20.0 + radius**2),
     )
-    vars = fill_cartoon_ghosts(vars._replace(conformal_metric=metric))
+    vars = vars._replace(conformal_metric=metric)
+    norms = compute_spherical_symmetry_norms(vars)
     support = reconstruct_cartoon_support(
         vars, _params(num_radial_points, dx)
     )
@@ -281,7 +373,6 @@ def test_tensor_reconstruction_uses_yy_without_tangential_averaging():
         np.asarray(2.0 + radius[:-3] ** 2),
         atol=3.0e-13,
     )
-    norms = compute_spherical_symmetry_norms(vars)
     np.testing.assert_allclose(norms["metric_tangential_linf"], 18.0)
 
 
@@ -570,7 +661,7 @@ def test_minkowski_evolution_and_symmetry_diagnostics_are_exact():
     )
     W = _set_positive(vars.conformal_factor, jnp.ones(num_radial_points))
     lapse = _set_positive(vars.lapse, jnp.ones(num_radial_points))
-    vars = fill_cartoon_ghosts(
+    vars = enforce_spherical_symmetry(
         vars._replace(conformal_metric=metric, conformal_factor=W, lapse=lapse)
     )
     params = _params(num_radial_points, dx)._replace(nu=0.0)
@@ -599,7 +690,7 @@ def test_schwarzschild_puncture_short_evolution_regression():
     )
     W = _set_positive(vars.conformal_factor, W_axis)
     lapse = _set_positive(vars.lapse, W_axis)
-    vars = fill_cartoon_ghosts(
+    vars = enforce_spherical_symmetry(
         vars._replace(conformal_metric=metric, conformal_factor=W, lapse=lapse)
     )
     params = _params(num_radial_points, dx)._replace(
@@ -638,7 +729,7 @@ def test_cartoon_rk4_evolves_compact_axis_and_refreshes_parity():
     lapse = _set_positive(
         vars.lapse, 1.0 - 0.01 * jnp.exp(-radius**2)
     )
-    vars = fill_cartoon_ghosts(
+    vars = enforce_spherical_symmetry(
         vars._replace(conformal_metric=metric, conformal_factor=W, lapse=lapse)
     )
     params = _params(num_radial_points, dx)._replace(

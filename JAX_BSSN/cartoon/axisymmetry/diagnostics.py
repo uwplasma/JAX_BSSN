@@ -10,11 +10,11 @@ from JAX_BSSN.bssn.constraints import ConstraintViolations, compute_all_constrai
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.cartoon.axisymmetry.reconstruction import (
     AXISYMMETRIC_GHOST_CELLS,
-    _expand_axisymmetric_scalar,
-    _expand_axisymmetric_vector,
-    _project_scalar,
-    _project_vector,
     expand_axisymmetric_plane,
+    expand_axisymmetric_scalar,
+    expand_axisymmetric_vector,
+    project_axisymmetric_scalar,
+    project_axisymmetric_vector,
     reconstruct_axisymmetric_support,
 )
 
@@ -28,11 +28,11 @@ def compute_axisymmetric_constraints(
     support_vars = reconstruct_axisymmetric_support(vars, params)
     support = compute_all_constraints(support_vars, params)
     return ConstraintViolations(
-        hamiltonian=_project_scalar(support.hamiltonian),
-        momentum=_project_vector(support.momentum),
-        det_gamma=_project_scalar(support.det_gamma),
-        trace_A=_project_scalar(support.trace_A),
-        gamma_condition=_project_vector(support.gamma_condition),
+        hamiltonian=project_axisymmetric_scalar(support.hamiltonian),
+        momentum=project_axisymmetric_vector(support.momentum),
+        det_gamma=project_axisymmetric_scalar(support.det_gamma),
+        trace_A=project_axisymmetric_scalar(support.trace_A),
+        gamma_condition=project_axisymmetric_vector(support.gamma_condition),
     )
 
 
@@ -89,8 +89,8 @@ def axisymmetric_plane_output_fields(
     """Return the complete state and constraints on a signed ``x-z`` plane."""
 
     full_vars = expand_axisymmetric_plane(vars)
-    full_hamiltonian = _expand_axisymmetric_scalar(hamiltonian)
-    full_momentum = _expand_axisymmetric_vector(momentum)
+    full_hamiltonian = expand_axisymmetric_scalar(hamiltonian)
+    full_momentum = expand_axisymmetric_vector(momentum)
     fields = {
         "W": full_vars.conformal_factor,
         "K": full_vars.trace_K,
@@ -104,11 +104,11 @@ def axisymmetric_plane_output_fields(
     }
 
     if det_gamma is not None:
-        fields["det_gamma_constraint"] = _expand_axisymmetric_scalar(det_gamma)
+        fields["det_gamma_constraint"] = expand_axisymmetric_scalar(det_gamma)
     if trace_A is not None:
-        fields["trace_A_constraint"] = _expand_axisymmetric_scalar(trace_A)
+        fields["trace_A_constraint"] = expand_axisymmetric_scalar(trace_A)
     if gamma_condition is not None:
-        full_gamma = _expand_axisymmetric_vector(gamma_condition)
+        full_gamma = expand_axisymmetric_vector(gamma_condition)
         fields["gamma_constraint"] = tuple(full_gamma[i] for i in range(3))
 
     for name, tensor in (
