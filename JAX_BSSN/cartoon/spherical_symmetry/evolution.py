@@ -1,11 +1,10 @@
 """Stage-wise spherical Cartoon evolution."""
 
-import jax.numpy as jnp
 from jax import jit
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.cartoon.spherical_symmetry.reconstruction import (
-    fill_cartoon_ghosts,
+    enforce_spherical_symmetry,
     project_cartoon_rhs,
     reconstruct_cartoon_support,
 )
@@ -33,10 +32,13 @@ def _add_scaled(vars, rhs, scale):
 
 
 def _prepare_stage(vars):
-    # Algebraic projection acts pointwise. Refreshing the ghosts afterwards
-    # makes the reflected half-cell data authoritative for reconstruction.
-    vars = enforce_algebraic_constraints(vars)
-    return fill_cartoon_ghosts(vars)
+    # Symmetry first: discarding the forbidden components changes det(gamma)
+    # and the trace of A, so running it second would undo the algebraic
+    # projection. The algebraic projection, in turn, maps diag(r, t, t) to
+    # diag(r, t', t') and scales by parity-even factors, so it preserves both
+    # the symmetric subspace and the ghost parity that symmetry just built.
+    vars = enforce_spherical_symmetry(vars)
+    return enforce_algebraic_constraints(vars)
 
 
 @jit

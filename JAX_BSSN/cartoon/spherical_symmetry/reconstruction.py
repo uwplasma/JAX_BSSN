@@ -1,4 +1,21 @@
-"""Compact storage and Cartesian support reconstruction for spherical Cartoon."""
+"""Compact storage and Cartesian support reconstruction for spherical Cartoon.
+
+Two steps carry the evolved state from its compact radial storage onto the
+Cartesian support the fourth-order derivative operators need:
+
+``radial_interpolate``
+    Evaluate one positive-radius profile at arbitrary radii, taking the
+    negative side from parity and the outside from a Sommerfeld continuation.
+``transformation_matrix``
+    Rotate on-axis frame components onto the Cartesian axes of an off-axis
+    support point.
+
+``enforce_spherical_symmetry`` is the matching projection in the other
+direction.  Reconstruction does not need it -- it reads only the independent
+profiles -- but the RK4 stepper applies it to the state itself so that the
+components spherical symmetry forbids cannot accumulate in storage and leak
+back through the algebraic constraint projection.
+"""
 
 import math
 
@@ -6,6 +23,12 @@ import jax.numpy as jnp
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.cartoon.interpolation import lagrange6_nonperiodic
+from JAX_BSSN.cartoon.symmetry import (
+    SCALAR_PARITY,
+    map_bssn_fields,
+    reflect,
+    vector_parity,
+)
 from JAX_BSSN.evolution.boundaries import PERIODIC_BC, SOMMERFELD_BC
 
 
@@ -15,45 +38,24 @@ CARTOON_CENTER = CARTOON_GHOST_CELLS
 CARTOON_OUTER_BUFFER_CELLS = 3
 
 VECTOR_X_REFLECTION_PARITY = (-1.0, 1.0, 1.0)
+RADIAL_VECTOR_PARITY = VECTOR_X_REFLECTION_PARITY[0]
 
 
-def _vector_parity(dtype):
-    return jnp.asarray(VECTOR_X_REFLECTION_PARITY, dtype=dtype)
+def _map_fields(vars, transform):
+    return map_bssn_fields(vars, transform, VECTOR_X_REFLECTION_PARITY)
 
 
-def _tensor_parity(dtype):
-    vector_parity = _vector_parity(dtype)
-    return vector_parity[:, None] * vector_parity[None, :]
+def _compact(positive_axis, parity):
+    """Attach the parity ghosts and restore the singleton y and z axes."""
+
+    ghosted = reflect(positive_axis, parity, axis=-1, count=CARTOON_GHOST_CELLS)
+    return ghosted[..., :, None, None]
 
 
-def _reflect_inner_ghosts(positive_axis, parity):
-    """Prepend the four reflected half-cell samples nearest the origin."""
+def _expanded(positive_axis, parity):
+    """Mirror the whole positive axis onto the complete signed x axis."""
 
-    parity = jnp.asarray(parity, dtype=positive_axis.dtype)
-    parity = parity.reshape(parity.shape + (1,))
-    ghosts = jnp.flip(
-        positive_axis[..., :CARTOON_GHOST_CELLS], axis=-1
-    ) * parity
-    return jnp.concatenate((ghosts, positive_axis), axis=-1)
-
-
-def _reflect_full_axis(positive_axis, parity):
-    """Reflect every positive sample to form the complete signed axis."""
-
-    parity = jnp.asarray(parity, dtype=positive_axis.dtype)
-    parity = parity.reshape(parity.shape + (1,))
-    negative_axis = jnp.flip(positive_axis, axis=-1) * parity
-    return jnp.concatenate((negative_axis, positive_axis), axis=-1)
-
-
-def _compact_field_from_positive_axis(positive_axis, parity):
-    compact_axis = _reflect_inner_ghosts(positive_axis, parity)
-    return compact_axis[..., :, None, None]
-
-
-def _full_field_from_positive_axis(positive_axis, parity):
-    full_axis = _reflect_full_axis(positive_axis, parity)
-    return full_axis[..., :, None, None]
+    return reflect(positive_axis, parity, axis=-1)[..., :, None, None]
 
 
 def validate_cartoon_grid(
@@ -133,69 +135,63 @@ def compact_cartoon_state(vars: BSSNVariables) -> BSSNVariables:
         )
 
     positive_slice = slice(full_nx // 2, None)
-    scalar_parity = jnp.asarray(1.0, dtype=vars.lapse.dtype)
-    vector_parity = _vector_parity(vars.shift.dtype)
-    tensor_parity = _tensor_parity(vars.conformal_metric.dtype)
 
-    return BSSNVariables(
-        conformal_metric=_compact_field_from_positive_axis(
-            vars.conformal_metric[..., positive_slice, 0, 0], tensor_parity
-        ),
-        conformal_factor=_compact_field_from_positive_axis(
-            vars.conformal_factor[positive_slice, 0, 0], scalar_parity
-        ),
-        traceless_K=_compact_field_from_positive_axis(
-            vars.traceless_K[..., positive_slice, 0, 0], tensor_parity
-        ),
-        trace_K=_compact_field_from_positive_axis(
-            vars.trace_K[positive_slice, 0, 0], scalar_parity
-        ),
-        conformal_connection=_compact_field_from_positive_axis(
-            vars.conformal_connection[..., positive_slice, 0, 0],
-            vector_parity,
-        ),
-        lapse=_compact_field_from_positive_axis(
-            vars.lapse[positive_slice, 0, 0], scalar_parity
-        ),
-        shift=_compact_field_from_positive_axis(
-            vars.shift[..., positive_slice, 0, 0], vector_parity
+    return _map_fields(
+        vars,
+        lambda field, parity: _compact(
+            field[..., positive_slice, 0, 0], parity
         ),
     )
 
 
-def fill_cartoon_ghosts(vars: BSSNVariables) -> BSSNVariables:
-    """Overwrite compact negative-x ghosts from the positive radial axis."""
+def _project_onto_symmetric_subspace(positive_axis):
+    """Keep only the components spherical symmetry allows on the +x axis.
 
-    scalar_parity = jnp.asarray(1.0, dtype=vars.lapse.dtype)
-    vector_parity = _vector_parity(vars.shift.dtype)
-    tensor_parity = _tensor_parity(vars.conformal_metric.dtype)
+    On the reference axis a spherically symmetric vector points along x and a
+    spherically symmetric tensor is ``diag(radial, tangential, tangential)``.
+    The yy entry is the authoritative tangential value; zz follows it.
+    """
 
-    return BSSNVariables(
-        conformal_metric=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_metric), tensor_parity
-        ),
-        conformal_factor=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_factor), scalar_parity
-        ),
-        traceless_K=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.traceless_K), tensor_parity
-        ),
-        trace_K=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.trace_K), scalar_parity
-        ),
-        conformal_connection=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_connection), vector_parity
-        ),
-        lapse=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.lapse), scalar_parity
-        ),
-        shift=_compact_field_from_positive_axis(
-            cartoon_positive_radius(vars.shift), vector_parity
-        ),
-    )
+    rank = positive_axis.ndim - 1
+    if rank == 0:
+        return positive_axis
+
+    zero = jnp.zeros_like(positive_axis[(0,) * rank])
+    if rank == 1:
+        return jnp.stack((positive_axis[0], zero, zero))
+    if rank == 2:
+        tangential = positive_axis[1, 1]
+        return jnp.stack(
+            (
+                jnp.stack((positive_axis[0, 0], zero, zero)),
+                jnp.stack((zero, tangential, zero)),
+                jnp.stack((zero, zero, tangential)),
+            )
+        )
+    raise ValueError(f"unsupported tensor rank {rank} for spherical symmetry")
+
+
+def enforce_spherical_symmetry(vars: BSSNVariables) -> BSSNVariables:
+    """Project the compact state onto the spherically symmetric subspace.
+
+    Components forbidden by spherical symmetry -- the tensor off-diagonals, the
+    transverse vector components, and any difference between the yy and zz
+    tangential entries -- are discarded on the positive radius, which is then
+    reflected across the origin into the four negative-x parity ghosts.
+    """
+
+    def transform(field, parity):
+        positive = _project_onto_symmetric_subspace(
+            cartoon_positive_radius(field)
+        )
+        return _compact(positive, parity)
+
+    return _map_fields(vars, transform)
 
 
 def _cartoon_geometry(num_x, dx, dtype):
+    """Return the support radius and its broadcast Cartesian coordinates."""
+
     spacing = jnp.asarray(dx, dtype=dtype)
     x = (
         jnp.arange(num_x, dtype=dtype)
@@ -205,20 +201,12 @@ def _cartoon_geometry(num_x, dx, dtype):
     transverse = (
         jnp.arange(CARTOON_SUPPORT_SIZE, dtype=dtype) - CARTOON_CENTER
     ) * spacing
-    X = x[:, None, None]
-    Y = transverse[None, :, None]
-    Z = transverse[None, None, :]
-    shape = (num_x, CARTOON_SUPPORT_SIZE, CARTOON_SUPPORT_SIZE)
-    r = jnp.sqrt(X**2 + Y**2 + Z**2)
-    direction = jnp.stack(
-        [
-            jnp.broadcast_to(X / r, shape),
-            jnp.broadcast_to(Y / r, shape),
-            jnp.broadcast_to(Z / r, shape),
-        ]
+
+    X, Y, Z = jnp.broadcast_arrays(
+        x[:, None, None], transverse[None, :, None], transverse[None, None, :]
     )
 
-    return r, direction
+    return jnp.sqrt(X**2 + Y**2 + Z**2), X, Y, Z
 
 
 def _sommerfeld_outer_buffer(axis, asymptotic_value, dx):
@@ -244,81 +232,156 @@ def _sommerfeld_outer_buffer(axis, asymptotic_value, dx):
     return jnp.concatenate((axis, buffer), axis=-1)
 
 
-def _interpolate_axis(field, r, dx, asymptotic_value):
-    """Interpolate the full parity-filled signed axis at positive radius."""
+def radial_interpolate(
+    positive_axis: jnp.ndarray,
+    radius: jnp.ndarray,
+    dx: float,
+    parity: float = SCALAR_PARITY,
+    asymptotic_value: float = 0.0,
+) -> jnp.ndarray:
+    """Interpolate one positive-x-axis profile at arbitrary radii.
 
-    axis = cartoon_centerline(field)
+    The positive half-axis is the only authoritative data.  Samples through the
+    origin come from its parity reflection, and samples past the outer face come
+    from a Sommerfeld 1/r continuation, so no target ever extrapolates.
+
+    ``parity`` is the sign the profile picks up under ``x -> -x``: ``+1`` for a
+    scalar or for the rr and tangential tensor entries, ``-1`` for the radial
+    component of a vector.
+    """
+
+    axis = reflect(positive_axis, parity, axis=-1, count=CARTOON_GHOST_CELLS)
     axis = _sommerfeld_outer_buffer(axis, asymptotic_value, dx)
+
     q = (
-        r / jnp.asarray(dx, dtype=r.dtype)
+        radius / jnp.asarray(dx, dtype=radius.dtype)
         + CARTOON_GHOST_CELLS
         - 0.5
     )
+
     return lagrange6_nonperiodic(axis, q, axis=-1)
 
 
-def _reconstruct_tensor(radial, tangential, direction):
-    identity = jnp.eye(3, dtype=radial.dtype)[:, :, None, None, None]
+def transformation_matrix(
+    x: jnp.ndarray, y: jnp.ndarray, z: jnp.ndarray
+) -> jnp.ndarray:
+    """Return Lambda^i_jbar from the on-axis frame to the point (x, y, z).
 
-    return (
-        tangential[None, None, ...] * identity
-        + (radial - tangential)[None, None, ...]
-        * jnp.einsum("i...,j...->ij...", direction, direction)
+    The on-axis frame sits at xbar = (r, 0, 0), so the columns of Lambda are the
+    radial, azimuthal and polar unit vectors in Cartesian components.  Lambda is
+    a rotation, so it transforms contravariant and covariant indices alike:
+    ``v^i = Lambda^i_abar v^abar`` and ``T_ij = Lambda_iabar Lambda_jbbar
+    T_abarbbar``.
+
+    The azimuthal and polar columns are fixed only up to a rotation about the
+    radius, which is harmless here: they ever multiply a degenerate tangential
+    pair or a zero.  The support grid never samples the polar axis, since its x
+    coordinates are half-cell offset, but the rho = 0 branch keeps a stray call
+    from injecting NaN into a jitted RHS.
+    """
+
+    x, y, z = jnp.broadcast_arrays(
+        jnp.asarray(x), jnp.asarray(y), jnp.asarray(z)
     )
+
+    r = jnp.sqrt(x**2 + y**2 + z**2)
+    rho = jnp.sqrt(x**2 + y**2)
+    safe_rho = jnp.where(rho > 0.0, rho, jnp.ones_like(rho))
+
+    zero = jnp.zeros_like(x)
+    one = jnp.ones_like(x)
+    off_polar_axis = (rho > 0.0)[None]
+
+    radial = jnp.stack((x / r, y / r, z / r))
+    azimuthal = jnp.where(
+        off_polar_axis,
+        jnp.stack((-y / safe_rho, x / safe_rho, zero)),
+        jnp.stack((zero, one, zero)),
+    )
+    polar = jnp.where(
+        off_polar_axis,
+        jnp.stack(
+            (-x * z / (r * safe_rho), -y * z / (r * safe_rho), rho / r)
+        ),
+        jnp.stack((-z / r, zero, zero)),
+    )
+
+    return jnp.stack((radial, azimuthal, polar), axis=1)
+
+
+def _rotate_vector(rotation, radial_profile):
+    """Rotate the on-axis vector (v_r, 0, 0) onto the Cartesian axes."""
+
+    zero = jnp.zeros_like(radial_profile)
+    on_axis = jnp.stack((radial_profile, zero, zero))
+
+    return jnp.einsum("ij...,j...->i...", rotation, on_axis)
+
+
+def _rotate_tensor(rotation, radial_profile, tangential_profile):
+    """Rotate diag(T_rr, T_tt, T_tt) onto the Cartesian axes."""
+
+    zero = jnp.zeros_like(radial_profile)
+    on_axis = jnp.stack(
+        (
+            jnp.stack((radial_profile, zero, zero)),
+            jnp.stack((zero, tangential_profile, zero)),
+            jnp.stack((zero, zero, tangential_profile)),
+        )
+    )
+
+    return jnp.einsum("ia...,jb...,ab...->ij...", rotation, rotation, on_axis)
 
 
 def reconstruct_cartoon_support(
     vars: BSSNVariables, params: BSSNParameters
 ) -> BSSNVariables:
-    """Build Cartesian support by signed-axis interpolation and rotation."""
+    """Build Cartesian support by radial interpolation and frame rotation.
 
-    vars = fill_cartoon_ghosts(vars)
+    Only the four profiles spherical symmetry leaves independent are read --
+    the rr and tangential tensor entries and the radial vector component -- so
+    no explicit symmetry projection is needed here.  The forbidden components
+    of ``vars`` are ignored rather than discarded, and the parity ghosts are
+    rebuilt from the positive radius by ``radial_interpolate``.
+    """
+
     num_x = vars.conformal_factor.shape[0]
 
-    r, direction = _cartoon_geometry(num_x, params.dx, vars.lapse.dtype)
+    radius, X, Y, Z = _cartoon_geometry(num_x, params.dx, vars.lapse.dtype)
+    rotation = transformation_matrix(X, Y, Z)
 
-    conformal_factor = _interpolate_axis(
-        vars.conformal_factor, r, params.dx, 1.0
-    )
-    trace_K = _interpolate_axis(vars.trace_K, r, params.dx, 0.0)
-    lapse = _interpolate_axis(vars.lapse, r, params.dx, 1.0)
-
-    shift_radial = _interpolate_axis(vars.shift[0], r, params.dx, 0.0)
-    connection_radial = _interpolate_axis(
-        vars.conformal_connection[0], r, params.dx, 0.0
-    )
-    shift = shift_radial[None, ...] * direction
-    conformal_connection = connection_radial[None, ...] * direction
-
-    metric_radial = _interpolate_axis(
-        vars.conformal_metric[0, 0], r, params.dx, 1.0
-    )
-    metric_tangential = _interpolate_axis(
-        vars.conformal_metric[1, 1], r, params.dx, 1.0
-    )
-    A_radial = _interpolate_axis(
-        vars.traceless_K[0, 0], r, params.dx, 0.0
-    )
-    A_tangential = _interpolate_axis(
-        vars.traceless_K[1, 1], r, params.dx, 0.0
-    )
+    def profile(field, asymptotic_value, parity=SCALAR_PARITY):
+        return radial_interpolate(
+            cartoon_positive_radius(field),
+            radius,
+            params.dx,
+            parity,
+            asymptotic_value,
+        )
 
     return BSSNVariables(
-        conformal_metric=_reconstruct_tensor(
-            metric_radial,
-            metric_tangential,
-            direction,
+        conformal_metric=_rotate_tensor(
+            rotation,
+            profile(vars.conformal_metric[0, 0], 1.0),
+            profile(vars.conformal_metric[1, 1], 1.0),
         ),
-        conformal_factor=conformal_factor,
-        traceless_K=_reconstruct_tensor(
-            A_radial,
-            A_tangential,
-            direction,
+        conformal_factor=profile(vars.conformal_factor, 1.0),
+        traceless_K=_rotate_tensor(
+            rotation,
+            profile(vars.traceless_K[0, 0], 0.0),
+            profile(vars.traceless_K[1, 1], 0.0),
         ),
-        trace_K=trace_K,
-        conformal_connection=conformal_connection,
-        lapse=lapse,
-        shift=shift,
+        trace_K=profile(vars.trace_K, 0.0),
+        conformal_connection=_rotate_vector(
+            rotation,
+            profile(
+                vars.conformal_connection[0], 0.0, RADIAL_VECTOR_PARITY
+            ),
+        ),
+        lapse=profile(vars.lapse, 1.0),
+        shift=_rotate_vector(
+            rotation, profile(vars.shift[0], 0.0, RADIAL_VECTOR_PARITY)
+        ),
     )
 
 
@@ -326,75 +389,36 @@ def _project_support_field(field, parity):
     positive_axis = field[
         ..., CARTOON_GHOST_CELLS:, CARTOON_CENTER, CARTOON_CENTER
     ]
-    return _compact_field_from_positive_axis(positive_axis, parity)
+    return _compact(positive_axis, parity)
 
 
 def project_cartoon_rhs(rhs: BSSNVariables) -> BSSNVariables:
     """Project a support RHS onto the independent compact radial state."""
 
-    scalar_parity = jnp.asarray(1.0, dtype=rhs.lapse.dtype)
-    vector_parity = _vector_parity(rhs.shift.dtype)
-    tensor_parity = _tensor_parity(rhs.conformal_metric.dtype)
-
-    return BSSNVariables(
-        conformal_metric=_project_support_field(
-            rhs.conformal_metric, tensor_parity
-        ),
-        conformal_factor=_project_support_field(
-            rhs.conformal_factor, scalar_parity
-        ),
-        traceless_K=_project_support_field(rhs.traceless_K, tensor_parity),
-        trace_K=_project_support_field(rhs.trace_K, scalar_parity),
-        conformal_connection=_project_support_field(
-            rhs.conformal_connection, vector_parity
-        ),
-        lapse=_project_support_field(rhs.lapse, scalar_parity),
-        shift=_project_support_field(rhs.shift, vector_parity),
-    )
+    return _map_fields(rhs, _project_support_field)
 
 
 def project_cartoon_scalar(field: jnp.ndarray) -> jnp.ndarray:
     """Project a scalar support field into compact parity-filled storage."""
 
-    return _project_support_field(
-        field, jnp.asarray(1.0, dtype=field.dtype)
-    )
+    return _project_support_field(field, SCALAR_PARITY)
 
 
 def project_cartoon_vector(field: jnp.ndarray) -> jnp.ndarray:
     """Project a Cartesian vector support field into compact storage."""
 
-    return _project_support_field(field, _vector_parity(field.dtype))
+    return _project_support_field(
+        field, vector_parity(VECTOR_X_REFLECTION_PARITY, field.dtype)
+    )
 
 
 def expand_cartoon_axis(vars: BSSNVariables) -> BSSNVariables:
     """Expand compact BSSN variables onto the complete signed x-axis."""
 
-    scalar_parity = jnp.asarray(1.0, dtype=vars.lapse.dtype)
-    vector_parity = _vector_parity(vars.shift.dtype)
-    tensor_parity = _tensor_parity(vars.conformal_metric.dtype)
-
-    return BSSNVariables(
-        conformal_metric=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_metric), tensor_parity
-        ),
-        conformal_factor=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_factor), scalar_parity
-        ),
-        traceless_K=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.traceless_K), tensor_parity
-        ),
-        trace_K=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.trace_K), scalar_parity
-        ),
-        conformal_connection=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.conformal_connection), vector_parity
-        ),
-        lapse=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.lapse), scalar_parity
-        ),
-        shift=_full_field_from_positive_axis(
-            cartoon_positive_radius(vars.shift), vector_parity
+    return _map_fields(
+        vars,
+        lambda field, parity: _expanded(
+            cartoon_positive_radius(field), parity
         ),
     )
 
@@ -402,14 +426,13 @@ def expand_cartoon_axis(vars: BSSNVariables) -> BSSNVariables:
 def expand_cartoon_scalar(field: jnp.ndarray) -> jnp.ndarray:
     """Expand a compact even scalar onto the complete signed x-axis."""
 
-    return _full_field_from_positive_axis(
-        cartoon_positive_radius(field), jnp.asarray(1.0, dtype=field.dtype)
-    )
+    return _expanded(cartoon_positive_radius(field), SCALAR_PARITY)
 
 
 def expand_cartoon_vector(field: jnp.ndarray) -> jnp.ndarray:
     """Expand a compact Cartesian vector onto the complete signed x-axis."""
 
-    return _full_field_from_positive_axis(
-        cartoon_positive_radius(field), _vector_parity(field.dtype)
+    return _expanded(
+        cartoon_positive_radius(field),
+        vector_parity(VECTOR_X_REFLECTION_PARITY, field.dtype),
     )

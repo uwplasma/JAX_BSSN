@@ -68,7 +68,17 @@ def compute_cartoon_constraint_norms(
 def compute_spherical_symmetry_norms(
     vars: BSSNVariables, exclude_outer: int = 0
 ) -> dict:
-    """Measure reference-axis components forbidden by spherical symmetry."""
+    """Measure reference-axis components forbidden by spherical symmetry.
+
+    Apply this to initial data, or to an RHS returned by
+    ``compute_cartoon_rhs``.  ``project_cartoon_rhs`` applies parity alone, so
+    a nonzero norm there is a real failure of reconstruction, of the Cartesian
+    RHS, or of the projection back onto compact storage.
+
+    Applying it to a state the stepper returned measures nothing:
+    ``enforce_spherical_symmetry`` zeroes exactly these components at every RK4
+    stage, so the result is zero by construction.
+    """
 
     def physical_radius(field):
         radius = cartoon_positive_radius(field)

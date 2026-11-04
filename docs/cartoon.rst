@@ -35,14 +35,32 @@ parity is the outer product of those vector parities.
 Spherical reconstruction
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-``reconstruct_cartoon_support`` directly interpolates the parity-filled
-x-axis data and reconstructs a Cartesian ``(Nr + 4) x 9 x 9`` support
-grid.
+``reconstruct_cartoon_support`` builds the Cartesian ``(Nr + 4) x 9 x 9``
+support grid from the positive radius in two explicit steps. It reads only
+the degrees of freedom the symmetry leaves independent -- the :math:`rr` and
+tangential tensor entries and the radial vector component -- so it needs no
+symmetry projection of its own.
 
-Axis fields are evaluated at
+``radial_interpolate`` evaluates one radial profile at
 :math:`r=\sqrt{x^2+y^2+z^2}` with six-point, degree-five nonperiodic Lagrange
-interpolation. Only the positive centerline RHS is retained after the Cartesian equations
-are evaluated. Four reflected ghosts are then regenerated from that result.
+interpolation. The positive half-axis is the only authoritative data: samples
+through the origin come from its parity reflection, and samples past the outer
+face come from three reconstruction-only Sommerfeld :math:`1/r` continuation
+cells, so no target ever extrapolates.
+
+``transformation_matrix(x, y, z)`` returns the rotation
+:math:`\Lambda^{i}{}_{\bar{\jmath}} =
+\partial x^{i}/\partial\bar{x}^{\bar{\jmath}}`
+from the on-axis frame :math:`\bar{x}=(r,0,0)` to the support point, whose
+columns are the radial, azimuthal and polar unit vectors. Scalars are the
+interpolated profile itself, vectors are
+:math:`\beta^{i}=\Lambda^{i}{}_{\bar{\jmath}}\bar{\beta}^{\bar{\jmath}}`,
+and tensors are
+:math:`\tilde{\gamma}_{ij}=\Lambda_{i\bar{a}}\Lambda_{j\bar{b}}
+\bar{\gamma}_{\bar{a}\bar{b}}`. Because :math:`\Lambda` is a rotation it
+serves both index positions. Only the positive centerline RHS is retained
+after the Cartesian equations are evaluated; four reflected ghosts are then
+regenerated from that result.
 
 RK4 algorithm
 ^^^^^^^^^^^^^^^^^^
@@ -50,8 +68,18 @@ RK4 algorithm
 ``cartoon_rk4_step`` is a separate entry point from Cartesian ``rk4_step``.
 For each classical RK4 stage it performs this sequence:
 
-1. Enforce determinant-one and trace-free BSSN algebraic constraints.
-2. Refresh compact origin ghosts from reflection parity.
+1. Enforce spherical symmetry: discard the components the symmetry forbids --
+   on the reference axis a vector is :math:`(v_r,0,0)` and a tensor is
+   :math:`\operatorname{diag}(T_{rr},T_{tt},T_{tt})`, with the ``yy`` entry
+   authoritative for the tangential pair -- and refresh the compact origin
+   ghosts from reflection parity.
+2. Enforce determinant-one and trace-free BSSN algebraic constraints. This
+   order matters: discarding the forbidden components moves
+   :math:`\det\tilde\gamma` and :math:`\operatorname{tr}\tilde{A}`, so step 1
+   run second would undo step 2. The reverse is safe, because the algebraic
+   projection maps :math:`\operatorname{diag}(r,t,t)` to
+   :math:`\operatorname{diag}(r,t',t')` and scales by parity-even factors,
+   preserving both the symmetric subspace and the ghost parity.
 3. Reconstruct Cartesian support from the parity-filled signed axis.
 4. Evaluate the ordinary Cartesian BSSN RHS and its outer Sommerfeld face.
 5. Project the support RHS back onto compact radial storage.
@@ -90,8 +118,12 @@ For each of the nine temporary :math:`y/\Delta x=-4,\ldots,4` planes,
 
    \rho=\sqrt{x^2+y^2}, \qquad \phi=\operatorname{atan2}(y,x),
 
-interpolates each complete field at ``(rho, 0, z)``, and rotates full vectors
-and both tensor indices with :math:`R_z(\phi)`. Three reconstruction-only
+interpolates each complete field at ``(rho, 0, z)`` with
+``radial_interpolate``, and rotates full vectors and both tensor indices with
+:math:`R_z(\phi)`, returned by ``transformation_matrix(x, y)``. Unlike the
+spherical case no component is discarded: axisymmetry forbids nothing
+pointwise on the reference plane, so ``fill_axisymmetric_ghosts`` is parity
+reflection alone. Three reconstruction-only
 outer radial samples continue deviations from flat-space values with
 :math:`1/\sqrt{\rho^2+z^2}` falloff at fixed :math:`z`.
 
