@@ -30,7 +30,6 @@ The supported physical examples are:
 2. Linear wave
 3. Spherical Cartoon puncture
 4. Axisymmetric black hole head-on collision
-5. Full 3D single charged black hole
 
 Each demo owns its initial data and run configuration. There is no generic
 simulation CLI or installed initial-data dispatcher.
@@ -61,22 +60,6 @@ Run the axisymmetric Cartoon head-on collision of two black holes:
 python demos/axisymmetric_blackhole_collision/axisymmetric_blackhole_collision.py
 ```
 
-Run the Cartesian Einstein--Maxwell evolution of one charged puncture on one
-explicitly selected GPU:
-
-```bash
-python demos/single_charged_blackhole/run_single_charged_blackhole.py
-```
-
-The charged demo defaults to a coarse `96^3` uniform grid with `M=1` and
-`Q=0.5`. Edit its configuration block before a production run. It is an
-initial-data and evolution setup, not a validated long-time calculation; it
-does not include mesh refinement, restart, or wave extraction.
-Run its CPU-scale analytic, one-step, and output checks with:
-
-```bash
-JAX_PLATFORMS=cpu python -m pytest tests/test_charged_puncture.py
-```
 
 The default production runs compile substantial JAX kernels. The
 [demo guide](docs/demos.rst) describes the evolution and configuration options.
