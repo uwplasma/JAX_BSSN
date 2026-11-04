@@ -53,17 +53,16 @@ def map_bssn_fields(vars: BSSNVariables, transform, signs, spatial_ndim=3):
 
 
 def reflect(positive, parity, axis=-1, count=None):
-    """Prepend the mirror image of ``positive`` across the origin.
+    """ Use a parity condition to reflect a tensor across the origin.
 
-    ``count`` limits the mirror to the samples nearest the origin, which builds
-    a ghost region; ``None`` mirrors every sample, which builds the complete
-    signed axis.  ``parity`` carries the leading component axes and broadcasts
-    over the trailing spatial ones.
+    For example, a scalar in spherical symmetry is even under reflection,
+    so the reflected grid is simply the mirror image of the positive half
     """
 
     axis = axis % positive.ndim
     parity = jnp.asarray(parity, dtype=positive.dtype)
-    parity = parity.reshape(parity.shape + (1,) * (positive.ndim - axis))
+    spatial_axes = positive.ndim - parity.ndim
+    parity = parity.reshape(parity.shape + (1,) * spatial_axes)
 
     index = [slice(None)] * positive.ndim
     index[axis] = slice(None, count)

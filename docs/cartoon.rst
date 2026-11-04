@@ -36,13 +36,10 @@ Spherical reconstruction
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``reconstruct_cartoon_support`` builds the Cartesian ``(Nr + 4) x 9 x 9``
-support grid from the positive radius in three explicit steps.
-
-``enforce_spherical_symmetry`` first projects the compact state onto the
-degrees of freedom the symmetry allows: on the reference axis a vector is
-:math:`(v_r,0,0)` and a tensor is :math:`\operatorname{diag}(T_{rr},T_{tt},
-T_{tt})`, with the ``yy`` entry authoritative for the tangential pair. The
-projected positive radius is then mirrored into the four parity ghosts.
+support grid from the positive radius in two explicit steps. It reads only
+the degrees of freedom the symmetry leaves independent -- the :math:`rr` and
+tangential tensor entries and the radial vector component -- so it needs no
+symmetry projection of its own.
 
 ``radial_interpolate`` evaluates one radial profile at
 :math:`r=\sqrt{x^2+y^2+z^2}` with six-point, degree-five nonperiodic Lagrange
@@ -52,7 +49,8 @@ face come from three reconstruction-only Sommerfeld :math:`1/r` continuation
 cells, so no target ever extrapolates.
 
 ``transformation_matrix(x, y, z)`` returns the rotation
-:math:`\Lambda^{i}{}_{\bar{\jmath}} = \partial x^{a}/\partial\bar{x}^{b}`
+:math:`\Lambda^{i}{}_{\bar{\jmath}} =
+\partial x^{i}/\partial\bar{x}^{\bar{\jmath}}`
 from the on-axis frame :math:`\bar{x}=(r,0,0)` to the support point, whose
 columns are the radial, azimuthal and polar unit vectors. Scalars are the
 interpolated profile itself, vectors are
@@ -70,11 +68,18 @@ RK4 algorithm
 ``cartoon_rk4_step`` is a separate entry point from Cartesian ``rk4_step``.
 For each classical RK4 stage it performs this sequence:
 
-1. Enforce determinant-one and trace-free BSSN algebraic constraints.
-2. Enforce spherical symmetry: discard the components the symmetry forbids and
-   refresh the compact origin ghosts from reflection parity. The algebraic
-   projection in step 1 is pointwise, so it preserves both the symmetric
-   subspace and the ghost parity.
+1. Enforce spherical symmetry: discard the components the symmetry forbids --
+   on the reference axis a vector is :math:`(v_r,0,0)` and a tensor is
+   :math:`\operatorname{diag}(T_{rr},T_{tt},T_{tt})`, with the ``yy`` entry
+   authoritative for the tangential pair -- and refresh the compact origin
+   ghosts from reflection parity.
+2. Enforce determinant-one and trace-free BSSN algebraic constraints. This
+   order matters: discarding the forbidden components moves
+   :math:`\det\tilde\gamma` and :math:`\operatorname{tr}\tilde{A}`, so step 1
+   run second would undo step 2. The reverse is safe, because the algebraic
+   projection maps :math:`\operatorname{diag}(r,t,t)` to
+   :math:`\operatorname{diag}(r,t',t')` and scales by parity-even factors,
+   preserving both the symmetric subspace and the ghost parity.
 3. Reconstruct Cartesian support from the parity-filled signed axis.
 4. Evaluate the ordinary Cartesian BSSN RHS and its outer Sommerfeld face.
 5. Project the support RHS back onto compact radial storage.

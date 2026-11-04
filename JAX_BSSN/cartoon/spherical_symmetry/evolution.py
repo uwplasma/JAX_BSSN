@@ -32,11 +32,13 @@ def _add_scaled(vars, rhs, scale):
 
 
 def _prepare_stage(vars):
-    # Algebraic projection acts pointwise, so it preserves both the symmetric
-    # subspace and the ghost parity. Enforcing symmetry afterwards makes the
-    # projected positive radius authoritative for the next reconstruction.
-    vars = enforce_algebraic_constraints(vars)
-    return enforce_spherical_symmetry(vars)
+    # Symmetry first: discarding the forbidden components changes det(gamma)
+    # and the trace of A, so running it second would undo the algebraic
+    # projection. The algebraic projection, in turn, maps diag(r, t, t) to
+    # diag(r, t', t') and scales by parity-even factors, so it preserves both
+    # the symmetric subspace and the ghost parity that symmetry just built.
+    vars = enforce_spherical_symmetry(vars)
+    return enforce_algebraic_constraints(vars)
 
 
 @jit

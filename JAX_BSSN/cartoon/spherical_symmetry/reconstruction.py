@@ -1,16 +1,20 @@
 """Compact storage and Cartesian support reconstruction for spherical Cartoon.
 
-Three steps carry the evolved state between its compact radial storage and the
+Two steps carry the evolved state from its compact radial storage onto the
 Cartesian support the fourth-order derivative operators need:
 
-``enforce_spherical_symmetry``
-    Project the positive x axis onto the degrees of freedom spherical symmetry
-    allows, then mirror it into the negative-x parity ghosts.
 ``radial_interpolate``
-    Evaluate one radial profile from that axis at arbitrary radii.
+    Evaluate one positive-radius profile at arbitrary radii, taking the
+    negative side from parity and the outside from a Sommerfeld continuation.
 ``transformation_matrix``
     Rotate on-axis frame components onto the Cartesian axes of an off-axis
     support point.
+
+``enforce_spherical_symmetry`` is the matching projection in the other
+direction.  Reconstruction does not need it -- it reads only the independent
+profiles -- but the RK4 stepper applies it to the state itself so that the
+components spherical symmetry forbids cannot accumulate in storage and leak
+back through the algebraic constraint projection.
 """
 
 import math
@@ -332,9 +336,15 @@ def _rotate_tensor(rotation, radial_profile, tangential_profile):
 def reconstruct_cartoon_support(
     vars: BSSNVariables, params: BSSNParameters
 ) -> BSSNVariables:
-    """Build Cartesian support by radial interpolation and frame rotation."""
+    """Build Cartesian support by radial interpolation and frame rotation.
 
-    vars = enforce_spherical_symmetry(vars)
+    Only the four profiles spherical symmetry leaves independent are read --
+    the rr and tangential tensor entries and the radial vector component -- so
+    no explicit symmetry projection is needed here.  The forbidden components
+    of ``vars`` are ignored rather than discarded, and the parity ghosts are
+    rebuilt from the positive radius by ``radial_interpolate``.
+    """
+
     num_x = vars.conformal_factor.shape[0]
 
     radius, X, Y, Z = _cartoon_geometry(num_x, params.dx, vars.lapse.dtype)

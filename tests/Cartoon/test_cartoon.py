@@ -3,6 +3,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from JAX_BSSN.bssn.tensor_algebra import (
+    determinant_3x3_metric,
+    invert_3x3_metric,
+    trace_tensor,
+)
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.cartoon.spherical_symmetry import (
     CARTOON_CENTER,
@@ -24,6 +29,12 @@ from JAX_BSSN.cartoon.spherical_symmetry import (
     transformation_matrix,
     validate_cartoon_grid,
 )
+
+# ``_prepare_stage`` is reached directly because the contract
+# ``test_prepare_stage_satisfies_both_projections`` pins is not observable
+# from the public stepper output.
+from JAX_BSSN.cartoon.spherical_symmetry.evolution import _prepare_stage
+from JAX_BSSN.cartoon.symmetry import reflect
 from JAX_BSSN.evolution.boundaries import PERIODIC_BC, SOMMERFELD_BC
 from JAX_BSSN.evolution.derivatives import diff1_field, diff2_field, divergence_3d
 from JAX_BSSN.evolution.time_evolve import compute_bssn_rhs
@@ -74,6 +85,24 @@ def _support_coordinates(num_radial_points, dx):
 
 def _set_positive(field, values):
     return field.at[..., CARTOON_GHOST_CELLS:, 0, 0].set(values)
+
+
+def _algebraic_violations(vars):
+    """Return max |det(gamma~) - 1| and max |tr(A~)| on the positive radius.
+
+    ``compute_cartoon_constraints`` cannot see these: it routes through
+    ``reconstruct_cartoon_support``, which reads only the four independent
+    profiles. The compact state has to be measured directly.
+    """
+
+    inverse_metric = invert_3x3_metric(vars.conformal_metric)
+    determinant = determinant_3x3_metric(vars.conformal_metric)
+    trace = trace_tensor(vars.traceless_K, inverse_metric)
+
+    return (
+        float(jnp.max(jnp.abs(cartoon_positive_radius(determinant) - 1.0))),
+        float(jnp.max(jnp.abs(cartoon_positive_radius(trace)))),
+    )
 
 
 def test_cartoon_grid_validation_and_axis_helpers():
@@ -167,6 +196,47 @@ def test_compact_cartoon_state_reflects_all_component_parities():
             np.testing.assert_array_equal(
                 compact.conformal_metric[i, j, :4, 0, 0], expected
             )
+
+
+def test_reflect_applies_parity_to_the_leading_component_axes():
+    """``reflect`` sizes its parity broadcast from the parity's own rank.
+
+    Keying the padding off the reflection axis instead leaves a partial parity
+    right-aligned onto whichever trailing axis happens to match, signing the
+    wrong index without raising.
+    """
+
+    positive = jnp.arange(1.0, 7.0).reshape(3, 2)
+    mirrored = reflect(positive, (-1.0, 1.0, 1.0), axis=-1, count=2)
+
+    np.testing.assert_array_equal(
+        mirrored,
+        np.asarray(
+            [
+                [-2.0, -1.0, 1.0, 2.0],
+                [4.0, 3.0, 3.0, 4.0],
+                [6.0, 5.0, 5.0, 6.0],
+            ]
+        ),
+    )
+
+    # A two-dimensional spatial layout reflected on its second-to-last axis
+    # needs two trailing singletons, not one.
+    plane = jnp.ones((3, 3, 4, 2))
+    signs = (-1.0, -1.0, 1.0)
+    ghosted = reflect(plane, jnp.asarray(signs)[:, None] * jnp.asarray(signs),
+                      axis=-2, count=2)
+    assert ghosted.shape == (3, 3, 6, 2)
+    for i in range(3):
+        for j in range(3):
+            np.testing.assert_array_equal(
+                ghosted[i, j, :2], np.full((2, 2), signs[i] * signs[j])
+            )
+
+    with pytest.raises(ValueError, match="component axes"):
+        reflect(positive, (-1.0, 1.0), axis=-1, count=2)
+    with pytest.raises(ValueError, match="component axes"):
+        reflect(positive, jnp.ones((3, 3)), axis=-1, count=2)
 
 
 def test_enforce_spherical_symmetry_overwrites_corrupted_ghosts():
@@ -672,9 +742,12 @@ def test_minkowski_evolution_and_symmetry_diagnostics_are_exact():
     evolved = cartoon_rk4_step(vars, params)
     for actual, expected in zip(evolved, vars):
         np.testing.assert_allclose(actual, expected, atol=2.0e-13)
+    # Measured on the projected RHS, not on ``evolved``: the stepper ends with
+    # ``enforce_spherical_symmetry``, so these norms are zero by construction
+    # on any state it returns. ``project_cartoon_rhs`` applies parity alone.
     assert all(
-        float(value) < 1.0e-30
-        for value in compute_spherical_symmetry_norms(evolved).values()
+        float(value) < 2.0e-13
+        for value in compute_spherical_symmetry_norms(rhs).values()
     )
 
 
@@ -709,9 +782,67 @@ def test_schwarzschild_puncture_short_evolution_regression():
     assert max(
         float(value)
         for value in compute_spherical_symmetry_norms(
-            evolved, exclude_outer=4
+            compute_cartoon_rhs(evolved, params), exclude_outer=4
         ).values()
-    ) < 2.0e-12
+    ) < 1.0e-16
+
+
+def test_prepare_stage_satisfies_both_projections():
+    """Stage preparation must land on the symmetric subspace *and* on the
+    algebraic constraint surface.
+
+    ``enforce_spherical_symmetry`` overwrites gamma_zz with gamma_yy and A_zz
+    with A_yy, which shifts det(gamma~) and tr(A~) by the size of the
+    asymmetry it discards. It therefore has to run *before*
+    ``enforce_algebraic_constraints``; the reverse order leaves det(gamma~)
+    off by of order the discarded split and hands that to the Cartesian RHS
+    for the remainder of the stage.
+
+    This reaches ``_prepare_stage`` directly because the violation is confined
+    to the inside of a stage: by the time ``cartoon_rk4_step`` returns, its
+    trailing preparation has run on an already-symmetric state, so the output
+    looks clean either way.
+    """
+
+    num_radial_points, dx = 12, 0.2
+    vars = _empty_variables(num_radial_points)
+    radius = _positive_radius(num_radial_points, dx)
+    identity = jnp.eye(3)[:, :, None]
+
+    split = 1.0e-6 * radius
+    amplitude = 0.01 * radius
+    metric = _set_positive(
+        vars.conformal_metric,
+        jnp.broadcast_to(identity, (3, 3, num_radial_points))
+        .at[1, 1].add(split)
+        .at[2, 2].add(-split),
+    )
+    # Traceless as given, but forcing A_zz := A_yy leaves a trace of 2 * split.
+    traceless_K = _set_positive(
+        vars.traceless_K,
+        jnp.zeros((3, 3, num_radial_points))
+        .at[0, 0].set(2.0 * amplitude)
+        .at[1, 1].set(-amplitude + split)
+        .at[2, 2].set(-amplitude - split),
+    )
+    vars = vars._replace(
+        conformal_metric=metric,
+        traceless_K=traceless_K,
+        conformal_factor=_set_positive(
+            vars.conformal_factor, jnp.ones(num_radial_points)
+        ),
+        lapse=_set_positive(vars.lapse, jnp.ones(num_radial_points)),
+    )
+
+    prepared = _prepare_stage(vars)
+
+    det_error, trace_error = _algebraic_violations(prepared)
+    assert det_error < 1.0e-14
+    assert trace_error < 1.0e-14
+    assert all(
+        float(value) == 0.0
+        for value in compute_spherical_symmetry_norms(prepared).values()
+    )
 
 
 def test_cartoon_rk4_evolves_compact_axis_and_refreshes_parity():
