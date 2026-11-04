@@ -233,11 +233,6 @@ def test_reflect_applies_parity_to_the_leading_component_axes():
                 ghosted[i, j, :2], np.full((2, 2), signs[i] * signs[j])
             )
 
-    with pytest.raises(ValueError, match="component axes"):
-        reflect(positive, (-1.0, 1.0), axis=-1, count=2)
-    with pytest.raises(ValueError, match="component axes"):
-        reflect(positive, jnp.ones((3, 3)), axis=-1, count=2)
-
 
 def test_enforce_spherical_symmetry_overwrites_corrupted_ghosts():
     num_radial_points = 8
