@@ -70,7 +70,6 @@ The default production runs compile substantial JAX kernels. The
 JAX_BSSN/
 ├── bssn/          # state, tensor algebra, geometry, equations, raw constraints
 ├── cartoon/       # spherical and axisymmetric reconstruction/evolution
-├── EM/            # Cartesian first-order Maxwell evolution and BSSN coupling
 ├── evolution/     # derivatives, boundaries, RHS assembly, projections, RK4
 ├── fmr/           # nested-patch geometry, transfers, stage-synchronous RK4
 ├── diagnostics/   # reductions, reporting, plotting, openPMD
