@@ -2,8 +2,8 @@ Demos
 =====
 
 The supported physical examples are gauge wave, linear wave, spherical Cartoon
-puncture, axisymmetric Cartoon collision, and a full 3D single charged black
-hole. Each demo owns its coordinates, initial data, parameters, and run loop.
+puncture, and axisymmetric Cartoon collision. Each demo owns its coordinates,
+initial data, parameters, and run loop.
 
 Install demo support first:
 
@@ -94,16 +94,3 @@ and Bowen–York curvature are evaluated analytically on the same plane.
 Initialization sets ``W=psi**-2``, unit conformal metric, BSSN traceless
 curvature ``psi**-6 * A_BY``, lapse ``W``, and zero trace curvature,
 connection functions, and shift.
-
-Single charged black hole
--------------------------
-
-Edit the configuration block at the top of the script, then run:
-
-.. code-block:: bash
-
-   python demos/single_charged_blackhole/run_single_charged_blackhole.py
-
-The demo evolves one nonspinning, initially stationary charged puncture with
-the full Cartesian Einstein--Maxwell system. The default is ``M=1``, ``Q=0.5``,
-``96^3`` cell centers over ``[-12,12]^3``, CFL ``0.2``, and final time ``100M``.

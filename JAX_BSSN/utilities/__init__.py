@@ -21,18 +21,9 @@ from JAX_BSSN.utilities.bowen_york_solver import (
 )
 
 
-def __getattr__(name):
-    # Pure geometry diagnostics do not need the charged solver's PyPIC3D stack.
-    if name == "single_charged_puncture_state":
-        from JAX_BSSN.utilities.charged_puncture_solver import single_charged_puncture_state
-        return single_charged_puncture_state
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
     "build_geometry",
     "find_apparent_horizon",
-    "single_charged_puncture_state",
     "axisymmetric_cell_centered_grid",
     "axisymmetric_hamiltonian_residual",
     "axisymmetric_laplacian",
