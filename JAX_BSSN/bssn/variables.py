@@ -36,6 +36,11 @@ class BSSNParameters(NamedTuple):
     y_min: float = 0.0        # Coordinate at the first y grid point
     z_min: float = 0.0        # Coordinate at the first z grid point
     mad_q: float = 1.0        # D4 weight in the MAD first/second derivatives
+    guard_cells: int = 0      # Lower padding before the first owned grid point
+    owned_shape: tuple | None = None  # Owned samples per axis; None uses the full array
+    owned_faces: tuple = (True, True, True, True, True, True)
+    # Global-face ownership in xl, xr, yl, yr, zl, zr order. Boundary codes
+    # remain global so MAD retains its axis-wide physical-boundary policy.
 
 
 def get_boundary_codes(
