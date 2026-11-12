@@ -150,7 +150,7 @@ ordinary neighbor exchange and must return the same tiled shapes. FMR uses
 this hook to supply the complete exterior shell from the matching parent
 stage, including edges and corners. A callback that depends on another
 patch's state must be supplied with that patch's state at the same RK stage;
-``tiled_fmr_rk4_step`` coordinates this across the hierarchy.
+``fmr_rk4_step`` coordinates this across the hierarchy.
 
 The PyPIC3D coupled path passes its exact field mesh and tile widths to this
 interface. Its BSSN guard depth is

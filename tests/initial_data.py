@@ -59,22 +59,6 @@ def _compute_conformal_connection(
     )
 
 
-def gauge_wave_data(
-    ni: int,
-    nj: int,
-    nk: int,
-    dx: float,
-    amplitude: float = 0.1,
-    wavelength: float = 1.0,
-) -> BSSNVariables:
-    """Initialize harmonic gauge-wave data."""
-
-    X, Y, Z = create_coordinate_arrays(ni, nj, nk, dx)
-    return gauge_wave_analytic_state(
-        X, Y, Z, 0.0, amplitude, wavelength
-    )
-
-
 def periodic_coordinate_arrays(
     grid_size: int, domain_length: float = 1.0
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:

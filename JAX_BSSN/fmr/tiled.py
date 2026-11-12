@@ -54,7 +54,7 @@ def evolution_parameters(parameters, hierarchy):
     return tuple(result)
 
 
-def validate_tiled_hierarchy(states, parameters, hierarchy, layouts):
+def validate_hierarchy(states, parameters, hierarchy, layouts):
     parents = hierarchy_parents(hierarchy)
     if not parameters or not len(parameters) == len(layouts) == len(parents):
         raise ValueError("FMR requires one state, parameter tuple, and layout per patch")
@@ -136,7 +136,7 @@ def initialize_tiled_fmr(initial, root_params, root_shape, hierarchy, *, mesh=No
     layouts = tuple(layouts)
     # Validate static nesting and all source stencils before allocating fields
     # or compiling communication kernels for an invalid hierarchy.
-    validate_tiled_hierarchy(None, parameters, hierarchy, layouts)
+    validate_hierarchy(None, parameters, hierarchy, layouts)
     if isinstance(initial, (tuple, list)) and not isinstance(initial, BSSNVariables):
         inputs = tuple(initial)
         if len(inputs) != len(parameters):
@@ -145,7 +145,7 @@ def initialize_tiled_fmr(initial, root_params, root_shape, hierarchy, *, mesh=No
         inputs = (initial,) * len(parameters)
     states = tuple(initialize_tiled_bssn(data, params, **layout)
                    for data, params, layout in zip(inputs, parameters, layouts))
-    validate_tiled_hierarchy(states, parameters, hierarchy, layouts)
+    validate_hierarchy(states, parameters, hierarchy, layouts)
     states = prepare_fmr_states(states, parameters, hierarchy, layouts=layouts, project=False)
     return states, parameters, layouts
 
@@ -177,7 +177,7 @@ def prepare_fmr_states(states, parameters, hierarchy, *, layouts, project=True):
     return tuple(prepared)
 
 
-def tiled_fmr_stage(states, parameters, hierarchy, *, layouts):
+def fmr_stage(states, parameters, hierarchy, *, layouts):
     """Matching stage states and RHS values, with no second halo exchange."""
     parameters = evolution_parameters(parameters, hierarchy)
     states = prepare_fmr_states(states, parameters, hierarchy, layouts=layouts)
@@ -186,19 +186,19 @@ def tiled_fmr_stage(states, parameters, hierarchy, *, layouts):
     return states, rhs
 
 
-def tiled_fmr_rk4_step(states, parameters, hierarchy, *, layouts):
+def fmr_rk4_step(states, parameters, hierarchy, *, layouts):
     """Advance all fixed patches using the same four RK stages and timestep."""
     states, parameters, layouts = tuple(states), tuple(parameters), tuple(layouts)
-    validate_tiled_hierarchy(states, parameters, hierarchy, layouts)
+    validate_hierarchy(states, parameters, hierarchy, layouts)
     parameters = evolution_parameters(parameters, hierarchy)
     dt = parameters[0].dt
-    s0, k1 = tiled_fmr_stage(states, parameters, hierarchy, layouts=layouts)
+    s0, k1 = fmr_stage(states, parameters, hierarchy, layouts=layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k / 2, s0, k1)
-    _, k2 = tiled_fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k2 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k / 2, s0, k2)
-    _, k3 = tiled_fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k3 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k, s0, k3)
-    _, k4 = tiled_fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k4 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
     result = jax.tree.map(lambda q, a, b, c, d: q + dt * (a + 2*b + 2*c + d) / 6,
                           s0, k1, k2, k3, k4)
     result = [project_owned(state, params, layout)

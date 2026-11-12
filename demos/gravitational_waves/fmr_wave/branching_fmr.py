@@ -15,16 +15,16 @@ if str(PACKAGE_ROOT) not in sys.path:
 import jax
 import jax.numpy as jnp
 
-from JAX_BSSN.bssn import BSSNParameters, BSSNVariables
-from JAX_BSSN.bssn.tensor_algebra import invert_3x3_metric, trace_tensor, traceless_part
+from JAX_BSSN.bssn import BSSNParameters
 from JAX_BSSN.diagnostics.openpmd import FMRPatchSeriesWriter, tiled_output_fields
 from JAX_BSSN.fmr import (
     FMRHierarchySpec, FMRPatchSpec, hierarchy_depths, hierarchy_parents,
-    initialize_tiled_fmr, tiled_fmr_rk4_step,
+    initialize_tiled_fmr, fmr_rk4_step,
 )
 from JAX_BSSN.parallel import make_field_mesh, map_tiled
 from JAX_BSSN.fmr.transfer import active_shape
 from JAX_BSSN.diagnostics.waves import composite_wave_diagnostics, diagnostic_fields
+from demos.gravitational_waves.linear_wave import linear_wave_initial_data
 
 
 # Simulation settings. CPU devices are configured in main, before making a mesh.
@@ -54,29 +54,6 @@ ROOT_PARAMETERS = BSSNParameters(
 )
 
 
-def linear_wave_initial_data(coordinates, local_params, *, amplitude, wavelength):
-    """Plus-polarized wave with its analytic conformal connection on owned vertices."""
-    x, y, z = coordinates
-    one = jnp.ones(local_params.owned_shape)
-    wave_number = 2*jnp.pi / wavelength
-    h = amplitude*jnp.sin(wave_number*x) + 0*y + 0*z
-    dhdx = wave_number*amplitude*jnp.cos(wave_number*x) + 0*y + 0*z
-    W = (1 - h*h)**(-1./6.)
-    metric = jnp.zeros((3, 3) + one.shape)
-    metric = metric.at[0, 0].set(W*W)
-    metric = metric.at[1, 1].set((1 + h)*W*W)
-    metric = metric.at[2, 2].set((1 - h)*W*W)
-    K = jnp.zeros_like(metric).at[1, 1].set(dhdx/2).at[2, 2].set(-dhdx/2)
-    inverse = invert_3x3_metric(metric)
-    vector = jnp.zeros((3,) + one.shape)
-    # det(gamma_tilde)=1 gives Gamma^x=-partial_x gamma_tilde^{xx}.
-    connection = vector.at[0].set(2*h*dhdx/3*(1 - h*h)**(-2./3.))
-    return BSSNVariables(
-        metric, W, W*W*traceless_part(K, metric, inverse),
-        W*W*trace_tensor(K, inverse), connection, one, vector,
-    )
-
-
 def run_branching_wave(output_path=None, *, steps=STEPS, mesh=None, amplitude=AMPLITUDE,
                        output_every=OUTPUT_EVERY, progress=False, wavelength=WAVELENGTH,
                        root_shape=ROOT_SHAPE, root_params=ROOT_PARAMETERS,
@@ -98,7 +75,7 @@ def run_branching_wave(output_path=None, *, steps=STEPS, mesh=None, amplitude=AM
     states, parameters, layouts = initialize_tiled_fmr(
         initial, params, root_shape, hierarchy, mesh=mesh,
     )
-    advance = jax.jit(lambda values: tiled_fmr_rk4_step(
+    advance = jax.jit(lambda values: fmr_rk4_step(
         values, parameters, hierarchy, layouts=layouts,
     ))
     base = OUTPUT_PATH if output_path is None else Path(output_path)

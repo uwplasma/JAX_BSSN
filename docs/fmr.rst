@@ -30,7 +30,7 @@ precede it. Omitting ``parent`` retains the historical parent-to-child chain.
     from JAX_BSSN.bssn import BSSNParameters
     from JAX_BSSN.fmr import (
         FMRHierarchySpec, FMRPatchSpec, initialize_tiled_fmr,
-        tiled_fmr_rk4_step,
+        fmr_rk4_step,
     )
 
     hierarchy = FMRHierarchySpec((
@@ -42,7 +42,7 @@ precede it. Omitting ``parent`` retains the historical parent-to-child chain.
     states, parameters, layouts = initialize_tiled_fmr(
         None, params, (24, 16, 16), hierarchy,
     )
-    advance = jax.jit(lambda values: tiled_fmr_rk4_step(
+    advance = jax.jit(lambda values: fmr_rk4_step(
         values, parameters, hierarchy, layouts=layouts,
     ))
     states = advance(states)
@@ -85,26 +85,15 @@ average. ``use_mad=True`` retains the mesh-adapted derivative coefficient
 ``(dx_finest/dx_patch)**4``. Sommerfeld axes retain the existing D4 physical
 boundary policy.
 
-Legacy serial calls
---------------------
-
-``fmr_rk4_step(states, parameters, hierarchy)`` continues to accept a bare
-root array and child arrays with symmetric guards. Existing
-``fine_coordinates``, ``fine_active_view``, ``prolongate_to_fine``, and
-``restrict_to_coarse`` callers retain their geometry conventions. The adapter
-returns the same serial array shapes. Serial child parameter origins still
-refer to the padded allocation; tiled parameter origins refer to active data.
-The small
-``demos/gravitational_waves/linear_wave.py`` API and output naming are retained.
-
 Output and diagnostics
 -----------------------
 
 ``FMRPatchSeriesWriter.write`` accepts one field map per patch in hierarchy
-order. Existing serial calls retain ``ghost_cells=(0, 4, ...)``. For tiled
-fields pass ``layouts=layouts`` and each layout's allocated guard depth;
-``origins`` are active patch origins. Owned chunks are copied directly to
-host patch arrays for output, including each final upper vertex once.
+order. For tiled fields pass ``layouts=layouts`` and each layout's allocated
+guard depth; ``origins`` are active patch origins. Host arrays carrying their
+own symmetric guards are still accepted with ``ghost_cells=(0, 4, ...)``.
+Owned chunks are copied directly to host patch arrays for output, including
+each final upper vertex once.
 Already-owned field maps can instead be passed with zero ghost cells on
 every patch and no layouts; they retain the same shape and topology checks.
 This writer currently supports tiled output from one process only.
@@ -126,8 +115,9 @@ linear wave with two siblings and a nested child, written at their native
 resolutions. From ``demos/gravitational_waves/fmr_wave``, run
 ``python branching_fmr.py`` directly. Edit the settings at the top of the
 script to choose the geometry, hierarchy, wave, timestep, and output cadence.
-Shared wave diagnostics live in ``JAX_BSSN.diagnostics.waves``; the older
-linear-wave demo retains its existing diagnostic imports and norm definitions.
+Shared wave diagnostics live in ``JAX_BSSN.diagnostics.waves``; both wave
+demonstrations import them, and both build their initial slice from
+``demos.gravitational_waves.linear_wave.linear_wave_initial_data``.
 The demonstration reports wave error and constraint norms;
 a short smoke run is not a long-time stability qualification.
 
