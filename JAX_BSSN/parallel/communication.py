@@ -60,10 +60,11 @@ def validate_layout(mesh, tile_shape, guard_cells, upper_endpoints):
         raise ValueError(f"BSSN requires mesh axes {MESH_AXES}")
     if guard_cells < 1:
         raise ValueError("Tiled fields require at least one guard cell")
-    for width, count, endpoint in zip(tile_shape, mesh.devices.shape, upper_endpoints):
-        reduced = width == count == 1 and not endpoint
-        if width < guard_cells and not reduced:
-            raise ValueError("A resolved tile must be at least as wide as its halo")
+    for width, count in zip(tile_shape, mesh.devices.shape):
+        if width < 1:
+            raise ValueError("Tiled fields require at least one owned sample per axis")
+        if count > 1 and width < guard_cells:
+            raise ValueError("A tile with neighbors must be at least as wide as its halo")
 
 
 def _sweep_tile(tile, boundary_codes, mesh_shape, tile_shape, g,
@@ -71,31 +72,33 @@ def _sweep_tile(tile, boundary_codes, mesh_shape, tile_shape, g,
     """Exchange slabs in x/y/z order, carrying edges and corners with them."""
     for axis, axis_name in enumerate(MESH_AXES):
         width, count = tile_shape[axis], mesh_shape[axis]
-        if width == count == 1 and not upper_endpoints[axis]:
-            tile = jnp.broadcast_to(tile[_plane(axis, slice(g, g + 1))], tile.shape)
-            continue
-
         index = jax.lax.axis_index(axis_name)
         last = index == count - 1
         endpoint = upper_endpoints[axis]
         lower, upper, low_owned, high_owned = _halo_slices(axis, g)
-        positive, negative = axis_permutations(count)
-
-        # Read BOTH sends before writing: source slabs can overlap for n<2g.
-        high_values = tile[high_owned]
-        if endpoint:
-            final_values = tile[_plane(axis, slice(width + 1, width + g + 1))]
-            high_values = jnp.where(last, final_values, high_values)
-        lower_values = jax.lax.ppermute(high_values, axis_name, positive)
-        upper_values = jax.lax.ppermute(tile[low_owned], axis_name, negative)
         before = tile
-        tile = tile.at[lower].set(lower_values)
-        if endpoint:
-            # The final C endpoint occupies the first nominal upper-ghost slot.
-            shifted = jnp.concatenate((before[_plane(axis, slice(g + width, g + width + 1))],
-                                       upper_values[_plane(axis, slice(0, g - 1))]), axis=axis)
-            upper_values = jnp.where(last, shifted, upper_values)
-        tile = tile.at[upper].set(upper_values)
+        if count == 1:
+            # A short patch can be narrower than its halo. Repeated wrapping
+            # reads only owned samples, even when a slab would span ghosts.
+            owned = width + int(endpoint)
+            nodes = g + (jnp.arange(tile.shape[axis]) - g) % owned
+            tile = jnp.take(tile, nodes, axis=axis)
+        else:
+            positive, negative = axis_permutations(count)
+            # Read BOTH sends before writing: source slabs can overlap for n<2g.
+            high_values = tile[high_owned]
+            if endpoint:
+                final_values = tile[_plane(axis, slice(width + 1, width + g + 1))]
+                high_values = jnp.where(last, final_values, high_values)
+            lower_values = jax.lax.ppermute(high_values, axis_name, positive)
+            upper_values = jax.lax.ppermute(tile[low_owned], axis_name, negative)
+            tile = tile.at[lower].set(lower_values)
+            if endpoint:
+                # The final C endpoint occupies the first nominal upper-ghost slot.
+                shifted = jnp.concatenate((before[_plane(axis, slice(g + width, g + width + 1))],
+                                           upper_values[_plane(axis, slice(0, g - 1))]), axis=axis)
+                upper_values = jnp.where(last, shifted, upper_values)
+            tile = tile.at[upper].set(upper_values)
 
         # Face codes remain dynamic JAX values. Wrapped sends are discarded
         # only on physical faces, so mixed left/right boundary codes work too.

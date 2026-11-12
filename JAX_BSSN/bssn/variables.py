@@ -41,6 +41,9 @@ class BSSNParameters(NamedTuple):
     owned_faces: tuple = (True, True, True, True, True, True)
     # Global-face ownership in xl, xr, yl, yr, zl, zr order. Boundary codes
     # remain global so MAD retains its axis-wide physical-boundary policy.
+    reduced_axes: tuple | None = None
+    # None retains legacy singleton-axis inference. Refined patches inherit
+    # domain dimensionality: one owned point can still have varying ghosts.
 
 
 def get_boundary_codes(

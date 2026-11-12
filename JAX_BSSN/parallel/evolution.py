@@ -24,8 +24,12 @@ def local_parameters(params, mesh, tile_shape, guard_cells, upper_endpoints):
                   for width, index, count, endpoint in zip(tile_shape, indices, counts, upper_endpoints))
     faces = tuple(flag for index, count in zip(indices, counts)
                   for flag in (index == 0, index == count - 1))
+    reduced = (params.reduced_axes if params.reduced_axes is not None else
+               tuple(width * count + int(endpoint) == 1
+                     for width, count, endpoint in zip(tile_shape, counts, upper_endpoints)))
     return params._replace(x_min=minima[0], y_min=minima[1], z_min=minima[2],
-                            guard_cells=guard_cells, owned_shape=owned, owned_faces=faces)
+                            guard_cells=guard_cells, owned_shape=owned, owned_faces=faces,
+                            reduced_axes=reduced)
 
 
 def owned_mask(shape, params):
@@ -63,8 +67,13 @@ def map_tiled(function, values, params, *, mesh, tile_shape, guard_cells=4,
                          out_specs=out_specs, check_vma=False)(values)
 
 
-def refresh_bssn_halos(state, params, **layout):
-    """Batch all BSSN components into one owner-to-ghost communication sweep."""
+def refresh_bssn_halos(state, params, *, ghost_fill=None, **layout):
+    """Exchange neighbors, then call ``ghost_fill(tiled_state, params)``.
+
+    The optional callback receives the global tiled tree after communication
+    and returns the same shapes. FMR uses it to replace the patch exterior
+    shell with interpolation from the matching parent RK stage.
+    """
     if layout.get("guard_cells", 4) < 4:
         raise ValueError("Tiled BSSN evolution requires four guards for the supported MAD stencils")
     spatial = state.conformal_factor.shape
@@ -76,59 +85,62 @@ def refresh_bssn_halos(state, params, **layout):
     for value, count in zip(state, counts):
         values.append(packed[start:start + count].reshape(value.shape))
         start += count
-    return type(state)(*values)
+    state = type(state)(*values)
+    return state if ghost_fill is None else ghost_fill(state, params)
 
 
-def prepare_tiled_state(state, params, **layout):
+def prepare_tiled_state(state, params, *, ghost_fill=None, **layout):
     """Project owned geometry, then refresh neighbors and physical exteriors."""
     def project(local, local_params):
         projected = enforce_algebraic_constraints(local)
         mask = owned_mask(local.conformal_factor.shape, local_params)
         return jax.tree.map(lambda new, old: jnp.where(mask, new, old), projected, local)
 
-    return refresh_bssn_halos(map_tiled(project, state, params, **layout), params, **layout)
+    return refresh_bssn_halos(map_tiled(project, state, params, **layout), params,
+                              ghost_fill=ghost_fill, **layout)
 
 
-def compute_tiled_bssn_rhs(state, params, **layout):
+def compute_tiled_bssn_rhs(state, params, *, ghost_fill=None, **layout):
     """Refresh state halos and evaluate the unchanged vacuum equations locally."""
-    state = refresh_bssn_halos(state, params, **layout)
+    state = refresh_bssn_halos(state, params, ghost_fill=ghost_fill, **layout)
     return map_tiled(compute_bssn_rhs, state, params, **layout)
 
 
 def compute_tiled_bssn_rhs_with_matter(state, params, energy_density, momentum_density,
-                                      spatial_stress, **layout):
+                                      spatial_stress, *, ghost_fill=None, **layout):
     """Evaluate matter-coupled equations with valid momentum derivative halos."""
-    state = refresh_bssn_halos(state, params, **layout)
+    state = refresh_bssn_halos(state, params, ghost_fill=ghost_fill, **layout)
     sources = tuple(refresh_tiled_field(value, params, **layout)
                     for value in (energy_density, momentum_density, spatial_stress))
     return map_tiled(lambda local, p: compute_bssn_rhs_with_matter(local[0], p, *local[1:]),
                        (state, *sources), params, output_template=state, **layout)
 
 
-def tiled_rk4_step(state, params, **layout):
+def tiled_rk4_step(state, params, *, ghost_fill=None, **layout):
     """RK4 with algebraic projection and a complete halo refresh at each stage."""
-    state = prepare_tiled_state(state, params, **layout)
-    k1 = compute_tiled_bssn_rhs(state, params, **layout)
+    state = prepare_tiled_state(state, params, ghost_fill=ghost_fill, **layout)
+    k1 = compute_tiled_bssn_rhs(state, params, ghost_fill=ghost_fill, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k / 2, state, k1)
-    stage = prepare_tiled_state(stage, params, **layout)
-    k2 = compute_tiled_bssn_rhs(stage, params, **layout)
+    stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
+    k2 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k / 2, state, k2)
-    stage = prepare_tiled_state(stage, params, **layout)
-    k3 = compute_tiled_bssn_rhs(stage, params, **layout)
+    stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
+    k3 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k, state, k3)
-    stage = prepare_tiled_state(stage, params, **layout)
-    k4 = compute_tiled_bssn_rhs(stage, params, **layout)
+    stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
+    k4 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
     result = jax.tree.map(lambda q, a, b, c, d: q + params.dt / 6 * (a + 2*b + 2*c + d),
                           state, k1, k2, k3, k4)
-    return prepare_tiled_state(result, params, **layout)
+    return prepare_tiled_state(result, params, ghost_fill=ghost_fill, **layout)
 
 
 def tiled_constraint_norms(state, params, rho=None, momentum=None, *, mesh,
-                            tile_shape, guard_cells=4, upper_endpoints=(False, False, False)):
+                            tile_shape, guard_cells=4, upper_endpoints=(False, False, False),
+                            ghost_fill=None):
     """Serial-compatible L2/Linf constraints, reducing only scalar statistics."""
     layout = dict(mesh=mesh, tile_shape=tile_shape, guard_cells=guard_cells,
                   upper_endpoints=upper_endpoints)
-    state = refresh_bssn_halos(state, params, **layout)
+    state = refresh_bssn_halos(state, params, ghost_fill=ghost_fill, **layout)
     values = (state,) if rho is None else (state, rho, momentum)
     specs = jax.tree.map(tile_spec, values)
 

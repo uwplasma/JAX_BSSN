@@ -1,9 +1,10 @@
-"""Stage-synchronous fixed mesh refinement for one nested patch per level.
+"""Vertex-centred fixed mesh refinement and serial compatibility helpers.
 
-The hierarchy is vertex centred, has a fixed 2:1 refinement ratio and four
-guard cells on every non-root level.  All levels advance with the finest-grid
-timestep.  Spatial prolongation is degree five and restriction is point
-injection at coincident vertices.
+The hierarchy is vertex centred with a fixed 2:1 refinement ratio. Legacy
+child arrays retain four symmetric guards; tiled arrays reserve an additional
+slot when an upper endpoint is owned. All levels advance with the common
+finest-grid timestep. Spatial prolongation is degree five and restriction is
+point injection at coincident vertices.
 """
 
 from functools import lru_cache
@@ -12,12 +13,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 
-from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
-from JAX_BSSN.evolution.time_evolve import (
-    compute_bssn_rhs,
-    eliminate_trace_A,
-    enforce_unit_determinant_conformal_metric,
-)
+from JAX_BSSN.bssn.variables import BSSNVariables
 
 
 class FMRPatchSpec(NamedTuple):
@@ -27,13 +23,42 @@ class FMRPatchSpec(NamedTuple):
     coarse_hi: tuple[int, int, int]
     refinement_ratio: int = 2
     ghost_width: int = 4
+    parent: int | None = None
 
 
 class FMRHierarchySpec(NamedTuple):
-    """Ordered parent-to-child patch chain and hierarchy-wide MAD choice."""
+    """Parent-before-child patches and hierarchy-wide MAD choice."""
 
     patches: tuple[FMRPatchSpec, ...]
     use_mad: bool = True
+
+
+def hierarchy_parents(hierarchy):
+    """Flat parent indices, with omitted parents retaining the old chain."""
+    parents = [-1]
+    for child, spec in enumerate(hierarchy.patches, start=1):
+        parent = child - 1 if spec.parent is None else spec.parent
+        if not isinstance(parent, (int, np.integer)) or not 0 <= parent < child:
+            raise ValueError("FMR patches must follow their parent in the hierarchy")
+        parents.append(int(parent))
+    for child, spec in enumerate(hierarchy.patches, start=1):
+        for other in range(1, child):
+            sibling = hierarchy.patches[other - 1]
+            if parents[child] == parents[other] and all(
+                max(a, b) <= min(c, d) for a, b, c, d in zip(
+                    spec.coarse_lo, sibling.coarse_lo,
+                    spec.coarse_hi, sibling.coarse_hi)
+            ):
+                raise ValueError("sibling FMR patches must not share owned vertices")
+    return tuple(parents)
+
+
+def hierarchy_depths(hierarchy):
+    """Refinement depth of each flat patch, starting with the root."""
+    depths = [0]
+    for parent in hierarchy_parents(hierarchy)[1:]:
+        depths.append(depths[parent] + 1)
+    return tuple(depths)
 
 
 def _validate_spec(spec: FMRPatchSpec) -> None:
@@ -189,136 +214,62 @@ def _spatial_shape(variables):
 
 
 def validate_hierarchy(states, parameters, hierarchy: FMRHierarchySpec) -> None:
-    """Validate static hierarchy geometry before compiling an evolution step."""
-    states, parameters = tuple(states), tuple(parameters)
-    patches = tuple(hierarchy.patches)
-    if not states:
-        raise ValueError("an FMR hierarchy requires at least one level")
-    if len(parameters) != len(states):
-        raise ValueError("FMR states and parameters must have equal lengths")
-    if len(patches) != len(states) - 1:
-        raise ValueError("an FMR hierarchy requires one patch per child level")
-    for spec in patches:
-        _validate_spec(spec)
-
-    dt = float(parameters[0].dt)
-    if not np.isfinite(dt) or dt <= 0.0:
-        raise ValueError("the shared FMR timestep must be finite and positive")
-    for level, (state, params) in enumerate(zip(states, parameters)):
-
-        if not np.isclose(float(params.dt), dt):
-            raise ValueError("stage-synchronous FMR requires identical timesteps")
-        shapes = {tuple(field.shape[-3:]) for field in state}
-        if len(shapes) != 1:
-            raise ValueError(f"level {level} fields have inconsistent spatial shapes")
-        if level:
-            parent_params = parameters[level - 1]
-            if not np.isclose(float(params.dx) * 2.0, float(parent_params.dx)):
-                raise ValueError("successive FMR spacings must differ by exactly two")
-            spec = patches[level - 1]
-            expected = tuple(n + 2 * spec.ghost_width
-                             for n in fine_active_shape(spec))
+    """Validate the legacy bare-root/symmetric-four-guard array convention."""
+    parents = hierarchy_parents(hierarchy)
+    if not states or not len(states) == len(parameters) == len(parents):
+        raise ValueError("FMR states, parameters, and hierarchy must have equal lengths")
+    for child, (state, params) in enumerate(zip(states, parameters)):
+        if len({tuple(field.shape[-3:]) for field in state}) != 1:
+            raise ValueError("FMR fields have inconsistent spatial shapes")
+        if child:
+            spec = hierarchy.patches[child - 1]
+            expected = tuple(n + 2 * spec.ghost_width for n in fine_active_shape(spec))
             if _spatial_shape(state) != expected:
-                raise ValueError(
-                    f"level {level} allocation shape {_spatial_shape(state)} "
-                    f"does not match expected {expected}"
-                )
-
-    for child_level, spec in enumerate(patches, start=1):
-        parent_active = (_spatial_shape(states[0]) if child_level == 1
-                         else fine_active_shape(patches[child_level - 2]))
-        if any(lo <= 0 or hi >= size - 1 for lo, hi, size in zip(
-            spec.coarse_lo, spec.coarse_hi, parent_active
-        )):
-            raise ValueError("every child patch must be strictly inside its parent")
-        parent_ghost = 0 if child_level == 1 else patches[child_level - 2].ghost_width
-        _interpolation_matrices(
-            states[child_level - 1][0], spec, (parent_ghost,) * 3,
-            child_level == 1,
-        )
-        parent_params, child_params = parameters[child_level - 1:child_level + 1]
-        parent_active_origin = np.asarray(
-            (parent_params.x_min, parent_params.y_min, parent_params.z_min),
-            dtype=float,
-        ) + parent_ghost * float(parent_params.dx)
-        expected_child_origin = (
-            parent_active_origin
-            + np.asarray(spec.coarse_lo) * float(parent_params.dx)
-            - spec.ghost_width * float(child_params.dx)
-        )
-        actual_child_origin = np.asarray(
-            (child_params.x_min, child_params.y_min, child_params.z_min), dtype=float
-        )
-        if not np.allclose(actual_child_origin, expected_child_origin):
-            raise ValueError(f"level {child_level} parameter origin is inconsistent")
-
-
-def _project(variables):
-    return eliminate_trace_A(enforce_unit_determinant_conformal_metric(variables))
-
-
-def _add(variables, rhs, scale):
-    return BSSNVariables(*(x + scale*y for x, y in zip(variables, rhs)))
-
-
-def _fill_hierarchy(states, hierarchy, matrices):
-    states = list(states)
-    for child_level, (spec, interpolation) in enumerate(
-        zip(hierarchy.patches, matrices), start=1
-    ):
-        states[child_level] = _fill_fine_ghosts_with_matrices(
-            states[child_level - 1], states[child_level], spec, interpolation
-        )
-    return tuple(states)
-
-
-def _stage(states, parameters, hierarchy, matrices):
-    states = tuple(_project(state) for state in states)
-    states = _fill_hierarchy(states, hierarchy, matrices)
-    return states, tuple(compute_bssn_rhs(state, params)
-                         for state, params in zip(states, parameters))
+                raise ValueError("FMR child allocation does not match its patch specification")
 
 
 def fmr_rk4_step(states, parameters, hierarchy: FMRHierarchySpec):
-    """Advance an ordered nested hierarchy through one synchronized RK4 step."""
+    """Advance legacy serial arrays through the common tiled FMR implementation.
+
+    The root has no ghosts; children have four symmetric ghosts and parameter
+    origins at the start of their padded allocations. Adapters use only JAX
+    array operations, so existing jitted callers retain their calling convention.
+    """
+    import jax
+    from JAX_BSSN.parallel import make_field_mesh
+    from .tiled import tiled_fmr_rk4_step
+
     states, parameters = tuple(states), tuple(parameters)
     validate_hierarchy(states, parameters, hierarchy)
-    finest_dx = parameters[-1].dx
-    evolved_parameters = tuple(
-        params._replace(mad_q=(finest_dx / params.dx) ** 4
-                        if hierarchy.use_mad and level < len(parameters) - 1
-                        else 1.0)
-        for level, params in enumerate(parameters)
-    )
-    matrices = tuple(
-        _interpolation_matrices(
-            states[level][0], spec,
-            ((0,) * 3 if level == 0
-             else (hierarchy.patches[level - 1].ghost_width,) * 3),
-            level == 0,
-        )
-        for level, spec in enumerate(hierarchy.patches)
-    )
-    dt = parameters[0].dt
-    s0, k1 = _stage(states, evolved_parameters, hierarchy, matrices)
-    _, k2 = _stage(tuple(_add(v, k, dt/2) for v, k in zip(s0, k1)),
-                   evolved_parameters, hierarchy, matrices)
-    _, k3 = _stage(tuple(_add(v, k, dt/2) for v, k in zip(s0, k2)),
-                   evolved_parameters, hierarchy, matrices)
-    _, k4 = _stage(tuple(_add(v, k, dt) for v, k in zip(s0, k3)),
-                   evolved_parameters, hierarchy, matrices)
-    result = [
-        BSSNVariables(*(x + dt*(a + 2*b + 2*c + d)/6
-                        for x, a, b, c, d in zip(v, r1, r2, r3, r4)))
-        for v, r1, r2, r3, r4 in zip(s0, k1, k2, k3, k4)
-    ]
-    result = [_project(state) for state in result]
-    for child_level in range(len(result) - 1, 0, -1):
-        parent_ghost = (0 if child_level == 1
-                        else hierarchy.patches[child_level - 2].ghost_width)
-        result[child_level - 1] = _project(restrict_to_coarse(
-            result[child_level - 1], result[child_level],
-            hierarchy.patches[child_level - 1],
-            parent_ghost_width=parent_ghost,
-        ))
-    return _fill_hierarchy(tuple(result), hierarchy, matrices)
+    mesh = make_field_mesh((1, 1, 1))
+    layouts, tiled, active_parameters = [], [], []
+    reduced = (tuple(n == 1 for n in _spatial_shape(states[0]))
+               if parameters[0].reduced_axes is None else parameters[0].reduced_axes)
+    for child, (state, params) in enumerate(zip(states, parameters)):
+        shape = _spatial_shape(state) if child == 0 else fine_active_shape(hierarchy.patches[child - 1])
+        layouts.append(dict(mesh=mesh, tile_shape=shape, guard_cells=4,
+                            upper_endpoints=(False,) * 3))
+        offset = 0 if child == 0 else 4 * params.dx
+        active_parameters.append(params._replace(
+            x_min=params.x_min + offset, y_min=params.y_min + offset,
+            z_min=params.z_min + offset, guard_cells=0, owned_shape=None,
+            reduced_axes=reduced,
+            **({name: 0 for name in ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc")}
+               if child else {})))
+        if child == 0:
+            state = jax.tree.map(lambda a: jnp.pad(a, ((0, 0),) * (a.ndim - 3) + ((4, 4),) * 3), state)
+        tiled.append(jax.tree.map(lambda a: a.reshape(a.shape[:-3] + (1, 1, 1) + a.shape[-3:]), state))
+    result = tiled_fmr_rk4_step(tuple(tiled), tuple(active_parameters), hierarchy, layouts=tuple(layouts))
+    serial = []
+    for child, state in enumerate(result):
+        state = jax.tree.map(lambda a: a.reshape(a.shape[:-6] + a.shape[-3:]), state)
+        if child == 0:
+            state = jax.tree.map(lambda a: a[(..., slice(4, -4), slice(4, -4), slice(4, -4))], state)
+        serial.append(state)
+    return tuple(serial)
+
+
+# Keep the historical module import usable while exposing the tiled path too.
+from .transfer import fill_tiled_fine_ghosts, restrict_tiled_to_coarse
+from .tiled import (initialize_tiled_fmr, prepare_fmr_states, tiled_fmr_stage,
+                    tiled_fmr_rk4_step, fmr_constraint_norms)

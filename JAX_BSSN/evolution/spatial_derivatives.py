@@ -33,36 +33,37 @@ def _boundary_data(field, direction, params):
         field.shape[field.ndim - 3 + direction]
         if params.owned_shape is None else params.owned_shape[direction]
     )
-    return left_bc, right_bc, start, start + count, mad_q
+    reduced = False
+    if params.reduced_axes is not None:
+        reduced = params.reduced_axes[direction]
+    elif params.owned_shape is not None:
+        reduced = count == 1
+    return left_bc, right_bc, start, start + count, mad_q, reduced
 
 
 def diff1_physical(field, direction, params):
     d = _direction(field, direction)
-    left_bc, right_bc, start, end, mad_q = _boundary_data(field, d, params)
+    left_bc, right_bc, start, end, mad_q, reduced = _boundary_data(field, d, params)
     derivative = diff1_field(
         field, direction, params.dx, left_bc, right_bc, mad_q=mad_q,
         interior_start=start, interior_end=end,
     )
-    if params.owned_shape is not None:
-        derivative = jnp.where(end - start == 1, 0.0, derivative)
-    return derivative
+    return jnp.where(reduced, 0.0, derivative)
 
 
 def diff2_physical(field, direction, params):
     d = _direction(field, direction)
-    left_bc, right_bc, start, end, mad_q = _boundary_data(field, d, params)
+    left_bc, right_bc, start, end, mad_q, reduced = _boundary_data(field, d, params)
     derivative = diff2_field(
         field, direction, params.dx, left_bc, right_bc, mad_q=mad_q,
         interior_start=start, interior_end=end,
     )
-    if params.owned_shape is not None:
-        derivative = jnp.where(end - start == 1, 0.0, derivative)
-    return derivative
+    return jnp.where(reduced, 0.0, derivative)
 
 
 def diff1_upwind_physical(field, rhs_coefficient, direction, params):
     d = _direction(field, direction)
-    left_bc, right_bc, start, end, mad_q = _boundary_data(field, d, params)
+    left_bc, right_bc, start, end, mad_q, reduced = _boundary_data(field, d, params)
     derivative = diff1_upwind_field(
         field,
         rhs_coefficient,
@@ -74,9 +75,7 @@ def diff1_upwind_physical(field, rhs_coefficient, direction, params):
         interior_start=start,
         interior_end=end,
     )
-    if params.owned_shape is not None:
-        derivative = jnp.where(end - start == 1, 0.0, derivative)
-    return derivative
+    return jnp.where(reduced, 0.0, derivative)
 
 
 def ko_dissipation(field, params):
@@ -84,13 +83,10 @@ def ko_dissipation(field, params):
     terms = []
     for d in range(3):
         h = params.dx
-        left_bc, right_bc, start, end, _ = _boundary_data(field, d, params)
+        left_bc, right_bc, start, end, _, reduced = _boundary_data(field, d, params)
         term = h**5 * diff6_field(
             field, field.ndim - 3 + d, h, left_bc, right_bc,
             interior_start=start, interior_end=end,
         )
-        if params.owned_shape is not None:
-            term = jnp.where(end - start == 1, 0.0, term)
-
-        terms.append(term)
+        terms.append(jnp.where(reduced, 0.0, term))
     return params.nu / 64 * sum(terms)
