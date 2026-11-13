@@ -69,6 +69,8 @@ Contents
    architecture
    bssn
    evolution
+   parallel
+   parallel_validation
    matter_sources
    cartoon
    fmr

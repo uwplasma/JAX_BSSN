@@ -50,15 +50,25 @@ def sommerfeld_boundary_mask(shape, params: BSSNParameters) -> jnp.ndarray:
     j = jnp.arange(ny)[None, :, None]
     k = jnp.arange(nz)[None, None, :]
 
+    start = params.guard_cells
+    counts = shape if params.owned_shape is None else params.owned_shape
+    codes = (
+        params.xl_bc, params.xr_bc, params.yl_bc,
+        params.yr_bc, params.zl_bc, params.zr_bc,
+    )
     mask = jnp.zeros((nx, ny, nz), dtype=bool)
-    mask = mask | ((params.xl_bc == SOMMERFELD_BC) & (i == 0))
-    mask = mask | ((params.xr_bc == SOMMERFELD_BC) & (i == nx - 1))
-    mask = mask | ((params.yl_bc == SOMMERFELD_BC) & (j == 0))
-    mask = mask | ((params.yr_bc == SOMMERFELD_BC) & (j == ny - 1))
-    mask = mask | ((params.zl_bc == SOMMERFELD_BC) & (k == 0))
-    mask = mask | ((params.zr_bc == SOMMERFELD_BC) & (k == nz - 1))
+    owned = jnp.ones((nx, ny, nz), dtype=bool)
+    for d, index in enumerate((i, j, k)):
+        end = start + counts[d]
+        lower = (codes[2*d] == SOMMERFELD_BC) & params.owned_faces[2*d]
+        upper = (codes[2*d + 1] == SOMMERFELD_BC) & params.owned_faces[2*d + 1]
+        if params.owned_shape is not None:
+            lower = lower & (counts[d] > 1)
+            upper = upper & (counts[d] > 1)
+        mask = mask | (lower & (index == start)) | (upper & (index == end - 1))
+        owned = owned & (index >= start) & (index < end)
 
-    return mask
+    return mask & owned
 
 
 @jit

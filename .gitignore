@@ -11,6 +11,12 @@ tests/__pycache__/
 *.txt
 demos/gravitational_waves/output/
 docs/_build/
+.coverage*
+!.coveragerc
+coverage.xml
+htmlcov/
+build/
+dist/
 PKG-INFO
 *.mp4
 *.json

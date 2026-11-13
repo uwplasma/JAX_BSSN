@@ -1,0 +1,62 @@
+name: Test coverage
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "true"
+      JAX_NUM_CPU_DEVICES: "8"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install test dependencies
+        run: python -m pip install ".[test,demos]" "coverage>=7.10"
+      - name: Run complete test suite
+        run: python -m coverage run -m pytest tests -ra
+      - name: Generate coverage reports
+        if: ${{ always() }}
+        run: |
+          python -m coverage combine
+          python -m coverage report | tee coverage.txt
+          python -m coverage xml
+          python -m coverage html
+          {
+            echo '## Library line coverage'
+            echo 'Python execution with JIT enabled; compiled XLA instructions are not measured.'
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-python-3.12
+          path: |
+            coverage.txt
+            coverage.xml
+            htmlcov/
+          retention-days: 14
+          if-no-files-found: warn

@@ -1,0 +1,74 @@
+name: Python package build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "true"
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Build source distribution and wheel
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Install wheel in clean environment
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip check
+      - name: Smoke test installed package outside checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/wheel-env/bin/python" -I - <<'PY'
+          import importlib
+          import pkgutil
+          from pathlib import Path
+          import sys
+
+          import jax
+          import jax.numpy as jnp
+          import JAX_BSSN
+          from JAX_BSSN.bssn.tensor_algebra import invert_3x3_metric
+
+          package_path = Path(JAX_BSSN.__file__).resolve()
+          assert package_path.is_relative_to(Path(sys.prefix).resolve()), package_path
+          for module in pkgutil.walk_packages(JAX_BSSN.__path__, "JAX_BSSN."):
+              importlib.import_module(module.name)
+
+          metric = jnp.diag(jnp.array([2.0, 3.0, 4.0]))
+          inverse = jax.jit(invert_3x3_metric)(metric)
+          assert bool(jnp.allclose(metric @ inverse, jnp.eye(3), atol=1.e-12))
+          print(f"Installed package smoke test passed: {package_path}")
+          PY
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: distributions-python-${{ matrix.python-version }}
+          path: dist/*
+          retention-days: 14
+          if-no-files-found: error

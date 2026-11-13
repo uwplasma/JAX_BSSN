@@ -47,6 +47,8 @@ def diff1_field(
     left_bc: int = 0,
     right_bc: int = 0,
     mad_q: float = 1.0,
+    interior_start: int = 0,
+    interior_end: int | None = None,
 ) -> jnp.ndarray:
     """
     Compute first derivative of entire field in given direction.
@@ -57,10 +59,15 @@ def diff1_field(
         dx: Grid spacing
         left_bc: Boundary code for the left face on this spatial axis
         right_bc: Boundary code for the right face on this spatial axis
+        interior_start: Index of the first owned sample in a padded tile
+        interior_end: Exclusive owned endpoint; None uses the array extent
         
     Returns:
         3D array containing the derivative
     """
+
+    if interior_end is None:
+        interior_end = field.shape[direction]
 
     # Blend D4 with the centered, sixth-order-accurate first derivative.  The
     # default q=1 is exactly the historical D4 operator.
@@ -91,22 +98,22 @@ def diff1_field(
 
     def replace_left_boundary(derivative):
         left_0 = (
-            -25.0 / 12.0 * field_axis_last[..., 0]
-            + 4.0 * field_axis_last[..., 1]
-            - 3.0 * field_axis_last[..., 2]
-            + 4.0 / 3.0 * field_axis_last[..., 3]
-            - 1.0 / 4.0 * field_axis_last[..., 4]
+            -25.0 / 12.0 * field_axis_last[..., interior_start]
+            + 4.0 * field_axis_last[..., interior_start + 1]
+            - 3.0 * field_axis_last[..., interior_start + 2]
+            + 4.0 / 3.0 * field_axis_last[..., interior_start + 3]
+            - 1.0 / 4.0 * field_axis_last[..., interior_start + 4]
         ) / dx
         left_1 = (
-            -1.0 / 4.0 * field_axis_last[..., 0]
-            - 5.0 / 6.0 * field_axis_last[..., 1]
-            + 3.0 / 2.0 * field_axis_last[..., 2]
-            - 1.0 / 2.0 * field_axis_last[..., 3]
-            + 1.0 / 12.0 * field_axis_last[..., 4]
+            -1.0 / 4.0 * field_axis_last[..., interior_start]
+            - 5.0 / 6.0 * field_axis_last[..., interior_start + 1]
+            + 3.0 / 2.0 * field_axis_last[..., interior_start + 2]
+            - 1.0 / 2.0 * field_axis_last[..., interior_start + 3]
+            + 1.0 / 12.0 * field_axis_last[..., interior_start + 4]
         ) / dx
 
-        derivative = derivative.at[..., 0].set(left_0)
-        derivative = derivative.at[..., 1].set(left_1)
+        derivative = derivative.at[..., interior_start].set(left_0)
+        derivative = derivative.at[..., interior_start + 1].set(left_1)
         return derivative
 
     # MAD's +/-3 stencil needs additional nonperiodic closures.  Until such
@@ -127,22 +134,22 @@ def diff1_field(
 
     def replace_right_boundary(derivative):
         right_1 = (
-            -1.0 / 12.0 * field_axis_last[..., -5]
-            + 1.0 / 2.0 * field_axis_last[..., -4]
-            - 3.0 / 2.0 * field_axis_last[..., -3]
-            + 5.0 / 6.0 * field_axis_last[..., -2]
-            + 1.0 / 4.0 * field_axis_last[..., -1]
+            -1.0 / 12.0 * field_axis_last[..., interior_end - 5]
+            + 1.0 / 2.0 * field_axis_last[..., interior_end - 4]
+            - 3.0 / 2.0 * field_axis_last[..., interior_end - 3]
+            + 5.0 / 6.0 * field_axis_last[..., interior_end - 2]
+            + 1.0 / 4.0 * field_axis_last[..., interior_end - 1]
         ) / dx
         right_0 = (
-            1.0 / 4.0 * field_axis_last[..., -5]
-            - 4.0 / 3.0 * field_axis_last[..., -4]
-            + 3.0 * field_axis_last[..., -3]
-            - 4.0 * field_axis_last[..., -2]
-            + 25.0 / 12.0 * field_axis_last[..., -1]
+            1.0 / 4.0 * field_axis_last[..., interior_end - 5]
+            - 4.0 / 3.0 * field_axis_last[..., interior_end - 4]
+            + 3.0 * field_axis_last[..., interior_end - 3]
+            - 4.0 * field_axis_last[..., interior_end - 2]
+            + 25.0 / 12.0 * field_axis_last[..., interior_end - 1]
         ) / dx
 
-        derivative = derivative.at[..., -2].set(right_1)
-        derivative = derivative.at[..., -1].set(right_0)
+        derivative = derivative.at[..., interior_end - 2].set(right_1)
+        derivative = derivative.at[..., interior_end - 1].set(right_0)
         return derivative
 
     derivative_axis_last = jax.lax.cond(
@@ -165,6 +172,8 @@ def diff1_upwind_field(
     left_bc: int = 0,
     right_bc: int = 0,
     mad_q: float = 1.0,
+    interior_start: int = 0,
+    interior_end: int | None = None,
 ) -> jnp.ndarray:
     """Compute a shift-advection first derivative along one array axis.
 
@@ -194,11 +203,16 @@ def diff1_upwind_field(
         left_bc: Boundary code for the left face on this spatial axis.
         right_bc: Boundary code for the right face on this spatial axis.
         mad_q: D4 weight in the D4/D6 MAD blend.
+        interior_start: Index of the first owned sample in a padded tile.
+        interior_end: Exclusive owned endpoint; None uses the array extent.
 
     Returns:
         An array with the same shape as ``field`` containing the selected
         derivative (without multiplication by ``rhs_coefficient``).
     """
+
+    if interior_end is None:
+        interior_end = field.shape[direction]
 
     forward1 = jnp.roll(field, -1, axis=direction)
     forward2 = jnp.roll(field, -2, axis=direction)
@@ -287,22 +301,29 @@ def diff1_upwind_field(
             left_bc,
             right_bc,
             mad_q=1.0,
+            interior_start=interior_start,
+            interior_end=interior_end,
         )
+        boundary_width = min(3, field.shape[direction])
         selected_axis_last = jnp.moveaxis(selected, direction, -1)
         centered_axis_last = jnp.moveaxis(centered_d4, direction, -1)
 
         selected_axis_last = jax.lax.cond(
             left_bc == SOMMERFELD_BC,
-            lambda derivative_axis_last: derivative_axis_last.at[..., :3].set(
-                centered_axis_last[..., :3]
+            lambda derivative_axis_last: jax.lax.dynamic_update_slice_in_dim(
+                derivative_axis_last,
+                jax.lax.dynamic_slice_in_dim(centered_axis_last, interior_start, boundary_width, axis=-1),
+                interior_start, axis=-1,
             ),
             lambda derivative_axis_last: derivative_axis_last,
             selected_axis_last,
         )
         selected_axis_last = jax.lax.cond(
             right_bc == SOMMERFELD_BC,
-            lambda derivative_axis_last: derivative_axis_last.at[..., -3:].set(
-                centered_axis_last[..., -3:]
+            lambda derivative_axis_last: jax.lax.dynamic_update_slice_in_dim(
+                derivative_axis_last,
+                jax.lax.dynamic_slice_in_dim(centered_axis_last, interior_end - boundary_width, boundary_width, axis=-1),
+                interior_end - boundary_width, axis=-1,
             ),
             lambda derivative_axis_last: derivative_axis_last,
             selected_axis_last,
@@ -325,6 +346,8 @@ def diff2_field(
     left_bc: int = 0,
     right_bc: int = 0,
     mad_q: float = 1.0,
+    interior_start: int = 0,
+    interior_end: int | None = None,
 ) -> jnp.ndarray:
     """Compute a pure second derivative along one array axis.
 
@@ -332,7 +355,12 @@ def diff2_field(
     second-derivative stencils using the same MAD weight as ``diff1_field``.
     Physical Sommerfeld axes deliberately retain the fourth-order stencil and
     use fourth-order one-sided closures at their outer two points.
+    ``interior_start:interior_end`` identifies owned samples when guards are
+    present; the default retains the full-array boundary locations.
     """
+
+    if interior_end is None:
+        interior_end = field.shape[direction]
 
     forward1 = jnp.roll(field, -1, axis=direction)
     forward2 = jnp.roll(field, -2, axis=direction)
@@ -369,23 +397,23 @@ def diff2_field(
 
     def replace_left_boundary(derivative):
         left_0 = (
-            15.0 / 4.0 * field_axis_last[..., 0]
-            - 77.0 / 6.0 * field_axis_last[..., 1]
-            + 107.0 / 6.0 * field_axis_last[..., 2]
-            - 13.0 * field_axis_last[..., 3]
-            + 61.0 / 12.0 * field_axis_last[..., 4]
-            - 5.0 / 6.0 * field_axis_last[..., 5]
+            15.0 / 4.0 * field_axis_last[..., interior_start]
+            - 77.0 / 6.0 * field_axis_last[..., interior_start + 1]
+            + 107.0 / 6.0 * field_axis_last[..., interior_start + 2]
+            - 13.0 * field_axis_last[..., interior_start + 3]
+            + 61.0 / 12.0 * field_axis_last[..., interior_start + 4]
+            - 5.0 / 6.0 * field_axis_last[..., interior_start + 5]
         ) / dx**2
         left_1 = (
-            5.0 / 6.0 * field_axis_last[..., 0]
-            - 5.0 / 4.0 * field_axis_last[..., 1]
-            - 1.0 / 3.0 * field_axis_last[..., 2]
-            + 7.0 / 6.0 * field_axis_last[..., 3]
-            - 1.0 / 2.0 * field_axis_last[..., 4]
-            + 1.0 / 12.0 * field_axis_last[..., 5]
+            5.0 / 6.0 * field_axis_last[..., interior_start]
+            - 5.0 / 4.0 * field_axis_last[..., interior_start + 1]
+            - 1.0 / 3.0 * field_axis_last[..., interior_start + 2]
+            + 7.0 / 6.0 * field_axis_last[..., interior_start + 3]
+            - 1.0 / 2.0 * field_axis_last[..., interior_start + 4]
+            + 1.0 / 12.0 * field_axis_last[..., interior_start + 5]
         ) / dx**2
-        derivative = derivative.at[..., 0].set(left_0)
-        derivative = derivative.at[..., 1].set(left_1)
+        derivative = derivative.at[..., interior_start].set(left_0)
+        derivative = derivative.at[..., interior_start + 1].set(left_1)
         return derivative
 
     # The sixth-order centered stencil has no physical boundary closures yet.
@@ -404,23 +432,23 @@ def diff2_field(
 
     def replace_right_boundary(derivative):
         right_1 = (
-            1.0 / 12.0 * field_axis_last[..., -6]
-            - 1.0 / 2.0 * field_axis_last[..., -5]
-            + 7.0 / 6.0 * field_axis_last[..., -4]
-            - 1.0 / 3.0 * field_axis_last[..., -3]
-            - 5.0 / 4.0 * field_axis_last[..., -2]
-            + 5.0 / 6.0 * field_axis_last[..., -1]
+            1.0 / 12.0 * field_axis_last[..., interior_end - 6]
+            - 1.0 / 2.0 * field_axis_last[..., interior_end - 5]
+            + 7.0 / 6.0 * field_axis_last[..., interior_end - 4]
+            - 1.0 / 3.0 * field_axis_last[..., interior_end - 3]
+            - 5.0 / 4.0 * field_axis_last[..., interior_end - 2]
+            + 5.0 / 6.0 * field_axis_last[..., interior_end - 1]
         ) / dx**2
         right_0 = (
-            -5.0 / 6.0 * field_axis_last[..., -6]
-            + 61.0 / 12.0 * field_axis_last[..., -5]
-            - 13.0 * field_axis_last[..., -4]
-            + 107.0 / 6.0 * field_axis_last[..., -3]
-            - 77.0 / 6.0 * field_axis_last[..., -2]
-            + 15.0 / 4.0 * field_axis_last[..., -1]
+            -5.0 / 6.0 * field_axis_last[..., interior_end - 6]
+            + 61.0 / 12.0 * field_axis_last[..., interior_end - 5]
+            - 13.0 * field_axis_last[..., interior_end - 4]
+            + 107.0 / 6.0 * field_axis_last[..., interior_end - 3]
+            - 77.0 / 6.0 * field_axis_last[..., interior_end - 2]
+            + 15.0 / 4.0 * field_axis_last[..., interior_end - 1]
         ) / dx**2
-        derivative = derivative.at[..., -2].set(right_1)
-        derivative = derivative.at[..., -1].set(right_0)
+        derivative = derivative.at[..., interior_end - 2].set(right_1)
+        derivative = derivative.at[..., interior_end - 1].set(right_0)
         return derivative
 
     derivative_axis_last = jax.lax.cond(
@@ -439,6 +467,8 @@ def diff6_field(
     dx: float,
     left_bc: int = 0,
     right_bc: int = 0,
+    interior_start: int = 0,
+    interior_end: int | None = None,
 ) -> jnp.ndarray:
     """
     Compute 6th-order derivative of entire field in given direction.
@@ -451,9 +481,14 @@ def diff6_field(
         dx: Grid spacing
         left_bc: Boundary code for the left face on this spatial axis
         right_bc: Boundary code for the right face on this spatial axis
+        interior_start: Index of the first owned sample in a padded tile
+        interior_end: Exclusive owned endpoint; None uses the array extent
     Returns:
         3D array containing the 6th derivative
     """
+
+    if interior_end is None:
+        interior_end = field.shape[direction]
 
     # 6th order finite difference coefficients
     # [1, -6, 15, -20, 15, -6, 1] / (dx^6)
@@ -475,39 +510,39 @@ def diff6_field(
 
     def replace_left_boundary(derivative):
         left_0 = (
-            4.0 * field_axis_last[..., 0]
-            - 27.0 * field_axis_last[..., 1]
-            + 78.0 * field_axis_last[..., 2]
-            - 125.0 * field_axis_last[..., 3]
-            + 120.0 * field_axis_last[..., 4]
-            - 69.0 * field_axis_last[..., 5]
-            + 22.0 * field_axis_last[..., 6]
-            - 3.0 * field_axis_last[..., 7]
+            4.0 * field_axis_last[..., interior_start]
+            - 27.0 * field_axis_last[..., interior_start + 1]
+            + 78.0 * field_axis_last[..., interior_start + 2]
+            - 125.0 * field_axis_last[..., interior_start + 3]
+            + 120.0 * field_axis_last[..., interior_start + 4]
+            - 69.0 * field_axis_last[..., interior_start + 5]
+            + 22.0 * field_axis_last[..., interior_start + 6]
+            - 3.0 * field_axis_last[..., interior_start + 7]
         ) / dx**6
         left_1 = (
-            3.0 * field_axis_last[..., 0]
-            - 20.0 * field_axis_last[..., 1]
-            + 57.0 * field_axis_last[..., 2]
-            - 90.0 * field_axis_last[..., 3]
-            + 85.0 * field_axis_last[..., 4]
-            - 48.0 * field_axis_last[..., 5]
-            + 15.0 * field_axis_last[..., 6]
-            - 2.0 * field_axis_last[..., 7]
+            3.0 * field_axis_last[..., interior_start]
+            - 20.0 * field_axis_last[..., interior_start + 1]
+            + 57.0 * field_axis_last[..., interior_start + 2]
+            - 90.0 * field_axis_last[..., interior_start + 3]
+            + 85.0 * field_axis_last[..., interior_start + 4]
+            - 48.0 * field_axis_last[..., interior_start + 5]
+            + 15.0 * field_axis_last[..., interior_start + 6]
+            - 2.0 * field_axis_last[..., interior_start + 7]
         ) / dx**6
         left_2 = (
-            2.0 * field_axis_last[..., 0]
-            - 13.0 * field_axis_last[..., 1]
-            + 36.0 * field_axis_last[..., 2]
-            - 55.0 * field_axis_last[..., 3]
-            + 50.0 * field_axis_last[..., 4]
-            - 27.0 * field_axis_last[..., 5]
-            + 8.0 * field_axis_last[..., 6]
-            - field_axis_last[..., 7]
+            2.0 * field_axis_last[..., interior_start]
+            - 13.0 * field_axis_last[..., interior_start + 1]
+            + 36.0 * field_axis_last[..., interior_start + 2]
+            - 55.0 * field_axis_last[..., interior_start + 3]
+            + 50.0 * field_axis_last[..., interior_start + 4]
+            - 27.0 * field_axis_last[..., interior_start + 5]
+            + 8.0 * field_axis_last[..., interior_start + 6]
+            - field_axis_last[..., interior_start + 7]
         ) / dx**6
 
-        derivative = derivative.at[..., 0].set(left_0)
-        derivative = derivative.at[..., 1].set(left_1)
-        derivative = derivative.at[..., 2].set(left_2)
+        derivative = derivative.at[..., interior_start].set(left_0)
+        derivative = derivative.at[..., interior_start + 1].set(left_1)
+        derivative = derivative.at[..., interior_start + 2].set(left_2)
         return derivative
 
     derivative_axis_last = jax.lax.cond(
@@ -519,39 +554,39 @@ def diff6_field(
 
     def replace_right_boundary(derivative):
         right_2 = (
-            -field_axis_last[..., -8]
-            + 8.0 * field_axis_last[..., -7]
-            - 27.0 * field_axis_last[..., -6]
-            + 50.0 * field_axis_last[..., -5]
-            - 55.0 * field_axis_last[..., -4]
-            + 36.0 * field_axis_last[..., -3]
-            - 13.0 * field_axis_last[..., -2]
-            + 2.0 * field_axis_last[..., -1]
+            -field_axis_last[..., interior_end - 8]
+            + 8.0 * field_axis_last[..., interior_end - 7]
+            - 27.0 * field_axis_last[..., interior_end - 6]
+            + 50.0 * field_axis_last[..., interior_end - 5]
+            - 55.0 * field_axis_last[..., interior_end - 4]
+            + 36.0 * field_axis_last[..., interior_end - 3]
+            - 13.0 * field_axis_last[..., interior_end - 2]
+            + 2.0 * field_axis_last[..., interior_end - 1]
         ) / dx**6
         right_1 = (
-            -2.0 * field_axis_last[..., -8]
-            + 15.0 * field_axis_last[..., -7]
-            - 48.0 * field_axis_last[..., -6]
-            + 85.0 * field_axis_last[..., -5]
-            - 90.0 * field_axis_last[..., -4]
-            + 57.0 * field_axis_last[..., -3]
-            - 20.0 * field_axis_last[..., -2]
-            + 3.0 * field_axis_last[..., -1]
+            -2.0 * field_axis_last[..., interior_end - 8]
+            + 15.0 * field_axis_last[..., interior_end - 7]
+            - 48.0 * field_axis_last[..., interior_end - 6]
+            + 85.0 * field_axis_last[..., interior_end - 5]
+            - 90.0 * field_axis_last[..., interior_end - 4]
+            + 57.0 * field_axis_last[..., interior_end - 3]
+            - 20.0 * field_axis_last[..., interior_end - 2]
+            + 3.0 * field_axis_last[..., interior_end - 1]
         ) / dx**6
         right_0 = (
-            -3.0 * field_axis_last[..., -8]
-            + 22.0 * field_axis_last[..., -7]
-            - 69.0 * field_axis_last[..., -6]
-            + 120.0 * field_axis_last[..., -5]
-            - 125.0 * field_axis_last[..., -4]
-            + 78.0 * field_axis_last[..., -3]
-            - 27.0 * field_axis_last[..., -2]
-            + 4.0 * field_axis_last[..., -1]
+            -3.0 * field_axis_last[..., interior_end - 8]
+            + 22.0 * field_axis_last[..., interior_end - 7]
+            - 69.0 * field_axis_last[..., interior_end - 6]
+            + 120.0 * field_axis_last[..., interior_end - 5]
+            - 125.0 * field_axis_last[..., interior_end - 4]
+            + 78.0 * field_axis_last[..., interior_end - 3]
+            - 27.0 * field_axis_last[..., interior_end - 2]
+            + 4.0 * field_axis_last[..., interior_end - 1]
         ) / dx**6
 
-        derivative = derivative.at[..., -3].set(right_2)
-        derivative = derivative.at[..., -2].set(right_1)
-        derivative = derivative.at[..., -1].set(right_0)
+        derivative = derivative.at[..., interior_end - 3].set(right_2)
+        derivative = derivative.at[..., interior_end - 2].set(right_1)
+        derivative = derivative.at[..., interior_end - 1].set(right_0)
         return derivative
 
     derivative_axis_last = jax.lax.cond(
