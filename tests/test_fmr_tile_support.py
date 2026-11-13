@@ -1,6 +1,7 @@
 """Tiled ghost callbacks and short patches used by fixed mesh refinement."""
 
 import unittest
+from unittest.mock import Mock
 
 import jax
 import jax.numpy as jnp
@@ -149,8 +150,12 @@ class TestFMRTileSupport(unittest.TestCase):
         self.assert_close(vacuum.trace_K[owned], -2.)
         self.assert_close(matter.trace_K[owned], -2.)
 
+        # Count callback applications during tracing, not device execution:
+        # once per prepared stage and once for the final valid ghost shell.
+        ghost_fill = Mock(side_effect=quadratic_lapse)
         evolved = jax.jit(lambda q: tiled_rk4_step(
-            q, params, ghost_fill=quadratic_lapse, **layout))(state)
+            q, params, ghost_fill=ghost_fill, **layout))(state)
+        self.assertEqual(ghost_fill.call_count, 5)
         self.assert_close(evolved.trace_K[owned] / params.dt, -2., atol=2.e-7)
         exterior = jnp.arange(9) != g
         self.assert_close(evolved.lapse[0, 0, 0, :, g, g][exterior],

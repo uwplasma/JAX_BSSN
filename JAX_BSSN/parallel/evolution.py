@@ -119,16 +119,16 @@ def compute_tiled_bssn_rhs_with_matter(state, params, energy_density, momentum_d
 def tiled_rk4_step(state, params, *, ghost_fill=None, **layout):
     """RK4 with algebraic projection and a complete halo refresh at each stage."""
     state = prepare_tiled_state(state, params, ghost_fill=ghost_fill, **layout)
-    k1 = compute_tiled_bssn_rhs(state, params, ghost_fill=ghost_fill, **layout)
+    k1 = map_tiled(compute_bssn_rhs, state, params, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k / 2, state, k1)
     stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
-    k2 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
+    k2 = map_tiled(compute_bssn_rhs, stage, params, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k / 2, state, k2)
     stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
-    k3 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
+    k3 = map_tiled(compute_bssn_rhs, stage, params, **layout)
     stage = jax.tree.map(lambda q, k: q + params.dt * k, state, k3)
     stage = prepare_tiled_state(stage, params, ghost_fill=ghost_fill, **layout)
-    k4 = compute_tiled_bssn_rhs(stage, params, ghost_fill=ghost_fill, **layout)
+    k4 = map_tiled(compute_bssn_rhs, stage, params, **layout)
     result = jax.tree.map(lambda q, a, b, c, d: q + params.dt / 6 * (a + 2*b + 2*c + d),
                           state, k1, k2, k3, k4)
     return prepare_tiled_state(result, params, ghost_fill=ghost_fill, **layout)
