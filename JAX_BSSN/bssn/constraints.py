@@ -298,7 +298,7 @@ def compute_hamiltonian_constraint(vars: BSSNVariables,
 
 
     # Hamiltonian constraint
-    hamiltonian = ricci_scalar + 2/3 * K_squared - A_squared
+    hamiltonian = ricci_scalar + 2/3 * K_squared - A_squared - 16.0 * jnp.pi * params.rho
 
     return hamiltonian
 

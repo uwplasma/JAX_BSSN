@@ -72,7 +72,10 @@ def _evolve_trace_extrinsic_curvature(
     # compute the upwinded advection term due to shift
 
 
-    dt_K = first_term + second_term + third_term + fourth_term
+    matter_term = 4.0 * jnp.pi * alpha * params.rho
+    # static matter source 4*pi*alpha*(rho + S) with S = 0 (pressureless dust)
+
+    dt_K = first_term + second_term + third_term + fourth_term + matter_term
     # compute dt_K
 
     if energy_density is not None:

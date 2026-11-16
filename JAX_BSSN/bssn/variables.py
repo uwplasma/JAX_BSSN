@@ -36,6 +36,7 @@ class BSSNParameters(NamedTuple):
     y_min: float = 0.0        # Coordinate at the first y grid point
     z_min: float = 0.0        # Coordinate at the first z grid point
     mad_q: float = 1.0        # D4 weight in the MAD first/second derivatives
+    rho: float | jnp.ndarray = 0.0  # Static matter energy density (scalar or grid field)
 
 
 def get_boundary_codes(
