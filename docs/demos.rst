@@ -44,9 +44,14 @@ overlapping blocks; it does not remove root cells covered by the fine patch or
 encode native AMR nesting.
 
 Each patch is also an independent file-based openPMD series, with per-patch
-``.pmd`` helpers for ParaView. ``grid_size`` must be divisible by four so 
-the centered inclusive patch bounds land on coarse vertices. The demo rejects 
+``.pmd`` helpers for ParaView. ``grid_size`` must be divisible by four so
+the centered inclusive patch bounds land on coarse vertices. The demo rejects
 a final normalized coarse or fine RMS wave error at or above five percent.
+
+Pass ``mesh=`` to ``run_linear_wave`` to distribute every patch over an
+existing field mesh; the default uses one device. Each patch extent must then
+fit that mesh, so a deep hierarchy on a small root may need a larger
+``grid_size``.
 
 
 

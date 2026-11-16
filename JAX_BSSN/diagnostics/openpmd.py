@@ -291,8 +291,46 @@ class OpenPMDWriter:
         self.close()
 
 
+def tiled_output_fields(field_map, layout):
+    """Copy owned tile samples into host arrays for single-process output.
+
+    Scalars and vector component tuples follow the ordinary writer format.
+    Only this diagnostic/output boundary assembles complete patch arrays.
+    """
+    if jax.process_count() != 1:
+        raise ValueError("tiled FMR output currently supports one process")
+    counts = tuple(layout["mesh"].devices.shape)
+    widths = tuple(layout["tile_shape"])
+    endpoints = tuple(layout.get("upper_endpoints", (False,) * 3))
+    g = layout.get("guard_cells", 4)
+    shape = tuple(count * width + int(endpoint)
+                  for count, width, endpoint in zip(counts, widths, endpoints))
+
+    def owned_array(value):
+        if value.shape != counts + tuple(width + 2*g for width in widths):
+            raise ValueError("output field does not match its tile layout")
+        result = np.empty(shape, dtype=value.dtype)
+        for shard in value.addressable_shards:
+            starts = tuple(index.start or 0 for index in shard.index[:3])
+            buffer = np.asarray(jax.device_get(shard.data))
+            for local_tile in np.ndindex(buffer.shape[:3]):
+                tile = tuple(start + index for start, index in zip(starts, local_tile))
+                owned = tuple(width + int(endpoint and index == count - 1)
+                              for width, endpoint, index, count in
+                              zip(widths, endpoints, tile, counts))
+                source = tuple(slice(g, g + n) for n in owned)
+                target = tuple(slice(index * width, index * width + n)
+                               for index, width, n in zip(tile, widths, owned))
+                result[target] = buffer[local_tile + source]
+        return result
+
+    return {name: tuple(owned_array(component) for component in field)
+            if _field_kind(field) == "vector" else owned_array(field)
+            for name, field in field_map.items()}
+
+
 class FMRPatchSeriesWriter:
-    """Write an ordered nested FMR hierarchy as one series per level."""
+    """Write a fixed patch tree as one native-resolution series per patch."""
 
     def __init__(self, base_name, dt):
         base_path = Path(base_name)
@@ -327,28 +365,37 @@ class FMRPatchSeriesWriter:
         )
 
     @staticmethod
-    def _iteration_attributes(level, active_shape, hierarchy, simulation_step):
-        if level == 0:
+    def _iteration_attributes(index, active_shape, hierarchy, simulation_step):
+        from JAX_BSSN.fmr import hierarchy_parents, hierarchy_depths
+
+        parents = hierarchy_parents(hierarchy)
+        depths = hierarchy_depths(hierarchy)
+        depth = depths[index]
+        patch = sum(value == depth for value in depths[:index])
+        if index == 0:
             start = (0, 0, 0)
             stop = tuple(int(size) for size in active_shape)
-            parent = -1
             ratio = 1
         else:
-            patch_spec = hierarchy.patches[level - 1]
-            start = tuple(int(index) for index in patch_spec.coarse_lo)
-            stop = tuple(int(index) + 1 for index in patch_spec.coarse_hi)
-            parent = level - 1
-            ratio = int(patch_spec.refinement_ratio)
+            spec = hierarchy.patches[index - 1]
+            start = tuple(int(value) for value in spec.coarse_lo)
+            stop = tuple(int(value) + 1 for value in spec.coarse_hi)
+            ratio = int(spec.refinement_ratio)
 
-        return {
-            "fmrLevel": np.int64(level),
-            "fmrPatch": np.int64(0),
-            "fmrParent": np.int64(parent),
+        attributes = {
+            "fmrLevel": np.int64(depth),
+            "fmrPatch": np.int64(patch),
+            "fmrParent": np.int64(parents[index]),
             "refinementRatio": np.int64(ratio),
             "coarseStart": np.asarray(start, dtype=np.int64),
             "coarseStop": np.asarray(stop, dtype=np.int64),
             "simulationStep": np.int64(simulation_step),
         }
+        # Existing chain files retain their exact metadata. Branching trees
+        # need an explicit flat index so fmrParent identifies its parent.
+        if parents != tuple(range(-1, len(parents) - 1)):
+            attributes["fmrId"] = np.int64(index)
+        return attributes
 
     def _write_patch(
         self,
@@ -363,7 +410,7 @@ class FMRPatchSeriesWriter:
         simulation_step,
         time,
     ):
-        pattern = self._pattern(level, 0)
+        pattern = self._pattern(*self._patches[level])
         series = io.Series(str(pattern), io.Access.create)
         try:
             series.set_attribute("software", "JAX_BSSN")
@@ -389,11 +436,15 @@ class FMRPatchSeriesWriter:
             series.close()
 
     def _validate_topology(self, fields, spacings, origins, positions, hierarchy):
-        from JAX_BSSN.fmr.refinement import fine_active_shape
+        from JAX_BSSN.fmr import fine_active_shape, hierarchy_parents, hierarchy_depths
 
+        parents = hierarchy_parents(hierarchy)
+        depths = hierarchy_depths(hierarchy)
+        self._patches = tuple((depth, depths[:i].count(depth))
+                              for i, depth in enumerate(depths))
         count = len(fields)
         if count == 0 or len(hierarchy.patches) != count - 1:
-            raise ValueError("hierarchy output requires one patch per child level")
+            raise ValueError("hierarchy output requires one field map per patch")
         if not (len(spacings) == len(origins) == len(positions) == count):
             raise ValueError("per-level output geometry lengths do not match")
         shapes = []
@@ -414,6 +465,7 @@ class FMRPatchSeriesWriter:
             if any(value <= 0.0 for value in spacings[level]):
                 raise ValueError("patch grid spacings must be positive")
             if level:
+                parent = parents[level]
                 spec = hierarchy.patches[level - 1]
                 if int(spec.refinement_ratio) != 2:
                     raise ValueError("FMR output supports only 2:1 refinement")
@@ -423,19 +475,19 @@ class FMRPatchSeriesWriter:
                         f"level {level} active shape {shape} does not match {expected}"
                     )
                 if not np.allclose(np.asarray(spacings[level]) * 2.0,
-                                   spacings[level - 1], rtol=_ALIGNMENT_RTOL,
+                                   spacings[parent], rtol=_ALIGNMENT_RTOL,
                                    atol=_ALIGNMENT_ATOL):
                     raise ValueError("successive FMR spacings must differ by two")
                 expected_origin = tuple(
                     origin + lo * spacing for origin, lo, spacing in zip(
-                        origins[level - 1], spec.coarse_lo, spacings[level - 1]
+                        origins[parent], spec.coarse_lo, spacings[parent]
                     )
                 )
                 if not np.allclose(origins[level], expected_origin,
                                    rtol=_ALIGNMENT_RTOL, atol=_ALIGNMENT_ATOL):
                     raise ValueError("child active origin is inconsistent with parent")
         signature = (
-            tuple(shapes), tuple(spacings), tuple(origins), tuple(positions),
+            tuple(shapes), tuple(spacings), tuple(origins), tuple(positions), parents,
             tuple((tuple(p.coarse_lo), tuple(p.coarse_hi), p.refinement_ratio)
                   for p in hierarchy.patches), tuple(sorted(root_kinds.items())),
         )
@@ -445,8 +497,8 @@ class FMRPatchSeriesWriter:
         return tuple(shapes)
 
     def _expected_alias_names(self, output_index, level_count):
-        return tuple(self._output_path(level, 0, output_index, "opmd").name
-                     for level in range(level_count))
+        return tuple(self._output_path(level, patch, output_index, "opmd").name
+                     for level, patch in self._patches)
 
     def _parse_manifest(self, level_count):
         if not self.visit_path.exists():
@@ -465,8 +517,8 @@ class FMRPatchSeriesWriter:
         groups = {}
         name = re.escape(self.base_path.name)
         patterns = [re.compile(
-            rf"^{name}_level_{level:02d}_patch_000_(\d{{8}})\.opmd$"
-        ) for level in range(level_count)]
+            rf"^{name}_level_{level:02d}_patch_{patch:03d}_(\d{{8}})\.opmd$"
+        ) for level, patch in self._patches]
         for offset in range(1, len(lines), group_size):
             time_line = lines[offset]
             aliases = tuple(lines[offset + 1:offset + group_size])
@@ -506,239 +558,6 @@ class FMRPatchSeriesWriter:
                 "VisIt manifest times must be nondecreasing by output index"
             )
         return groups
-
-    def _validate_existing_patch(
-        self,
-        output_index,
-        manifest_time,
-        level,
-        expected_fields,
-        expected_shape,
-        expected_spacing,
-        expected_origin,
-        expected_position,
-        patch_spec,
-    ):
-        path = self._output_path(level, 0, output_index)
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(
-                f"VisIt manifest references a missing patch file: {path}"
-            )
-
-        series = io.Series(str(path), io.Access.read_only)
-        try:
-            if output_index not in series.iterations:
-                raise ValueError(
-                    f"patch file {path} does not contain iteration {output_index}"
-                )
-            iteration = series.iterations[output_index]
-            if not np.isclose(
-                iteration.time,
-                manifest_time,
-                rtol=_ALIGNMENT_RTOL,
-                atol=_ALIGNMENT_ATOL,
-            ):
-                raise ValueError(
-                    f"patch file {path} has a time conflicting with its manifest"
-                )
-            if not np.isclose(
-                iteration.dt,
-                self.dt,
-                rtol=_ALIGNMENT_RTOL,
-                atol=_ALIGNMENT_ATOL,
-            ):
-                raise ValueError("FMR patch-series solver timestep changed")
-
-            expected_attributes = self._iteration_attributes(
-                level, expected_shape, patch_spec, simulation_step=0
-            )
-            for name, expected in expected_attributes.items():
-                if name == "simulationStep":
-                    continue
-                try:
-                    actual = iteration.get_attribute(name)
-                except Exception as exc:
-                    raise ValueError(
-                        f"patch file {path} is missing hierarchy attribute {name}"
-                    ) from exc
-                if not np.array_equal(np.asarray(actual), np.asarray(expected)):
-                    raise ValueError(
-                        f"FMR patch-series topology changed for attribute {name}"
-                    )
-
-            if set(iteration.meshes) != set(expected_fields):
-                raise ValueError("FMR patch-series field set changed on restart")
-            for field_name, field in expected_fields.items():
-                mesh = iteration.meshes[field_name]
-                expected_components = (
-                    set(_VECTOR_COMPONENTS)
-                    if _field_kind(field) == "vector"
-                    else {io.Mesh_Record_Component.SCALAR}
-                )
-                if set(mesh) != expected_components:
-                    raise ValueError(
-                        f"field {field_name!r} changes scalar/vector kind on restart"
-                    )
-                if not np.allclose(
-                    mesh.grid_spacing,
-                    expected_spacing,
-                    rtol=_ALIGNMENT_RTOL,
-                    atol=_ALIGNMENT_ATOL,
-                ):
-                    raise ValueError("FMR patch-series spacing changed on restart")
-                if not np.allclose(
-                    mesh.grid_global_offset,
-                    expected_origin,
-                    rtol=_ALIGNMENT_RTOL,
-                    atol=_ALIGNMENT_ATOL,
-                ):
-                    raise ValueError("FMR patch-series origin changed on restart")
-                for component_name in mesh:
-                    component = mesh[component_name]
-                    if tuple(component.shape) != expected_shape:
-                        raise ValueError(
-                            "FMR patch-series active shape changed on restart"
-                        )
-                    if not np.allclose(
-                        component.position,
-                        expected_position,
-                        rtol=_ALIGNMENT_RTOL,
-                        atol=_ALIGNMENT_ATOL,
-                    ):
-                        raise ValueError(
-                            "FMR patch-series grid position changed on restart"
-                        )
-            simulation_step = int(
-                iteration.get_attribute("simulationStep")
-            )
-            if simulation_step < 0:
-                raise ValueError(
-                    f"patch file {path} contains an invalid simulationStep"
-                )
-            iteration.close()
-            return simulation_step
-        finally:
-            series.close()
-
-    def _validate_existing_outputs(
-        self,
-        groups,
-        root_fields,
-        fine_fields,
-        root_shape,
-        fine_shape,
-        root_spacing,
-        fine_spacing,
-        root_origin,
-        fine_origin,
-        root_position,
-        fine_position,
-        patch_spec,
-        current_output_index,
-        current_simulation_step,
-    ):
-        for output_index, (time, _, _) in groups.items():
-            if jax.process_index() == 0:
-                for level, patch in self._PATCHES:
-                    alias = self._output_path(
-                        level, patch, output_index, "opmd"
-                    )
-                    target = self._output_path(
-                        level, patch, output_index, "h5"
-                    )
-                    if (not alias.is_symlink()
-                            or os.readlink(alias) != target.name):
-                        raise ValueError(
-                            f"VisIt manifest references an invalid alias: {alias}"
-                        )
-            root_step = self._validate_existing_patch(
-                output_index,
-                time,
-                0,
-                root_fields,
-                root_shape,
-                root_spacing,
-                root_origin,
-                root_position,
-                patch_spec,
-            )
-            fine_step = self._validate_existing_patch(
-                output_index,
-                time,
-                1,
-                fine_fields,
-                fine_shape,
-                fine_spacing,
-                fine_origin,
-                fine_position,
-                patch_spec,
-            )
-            if root_step != fine_step:
-                raise ValueError(
-                    "root and fine patches have conflicting simulationStep values"
-                )
-            if (output_index == current_output_index
-                    and root_step != current_simulation_step):
-                raise ValueError(
-                    f"output index {output_index} already has conflicting "
-                    f"simulationStep {root_step}"
-                )
-
-    def _rewrite_manifest(self, output_index, time):
-        groups = self._parse_manifest()
-        aliases = self._expected_alias_names(output_index)
-        if output_index in groups:
-            old_time, old_root, old_fine = groups[output_index]
-            if not np.isclose(
-                old_time, time, rtol=_ALIGNMENT_RTOL, atol=_ALIGNMENT_ATOL
-            ):
-                raise ValueError(
-                    f"output index {output_index} already has conflicting time "
-                    f"{old_time} in the VisIt manifest"
-                )
-            if (old_root, old_fine) != aliases:
-                raise ValueError(
-                    f"output index {output_index} has conflicting block paths"
-                )
-        groups[output_index] = (float(time), *aliases)
-
-        indices = sorted(groups)
-        if indices != list(range(len(indices))):
-            raise ValueError(
-                "saved output indices must be contiguous and start at zero"
-            )
-
-        ordered_times = [groups[index][0] for index in indices]
-        if any(later < earlier and not np.isclose(
-            later, earlier, rtol=_ALIGNMENT_RTOL, atol=_ALIGNMENT_ATOL
-        ) for earlier, later in zip(ordered_times, ordered_times[1:])):
-            raise ValueError(
-                "VisIt manifest times must be nondecreasing by output index"
-            )
-
-        lines = ["!NBLOCKS 2"]
-        for index in sorted(groups):
-            group_time, root_name, fine_name = groups[index]
-            lines.extend((f"!TIME {group_time}", root_name, fine_name))
-        contents = "\n".join(lines) + "\n"
-
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=self.visit_path.parent,
-            prefix=f".{self.visit_path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(contents)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary_name, self.visit_path)
-        except BaseException:
-            try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
-            raise
 
     @staticmethod
     def _ensure_relative_alias(alias_path, target_path):
@@ -780,154 +599,6 @@ class FMRPatchSeriesWriter:
                 f"refusing to overwrite conflicting ParaView helper {helper_path}"
             )
         helper_path.write_text(expected, encoding="utf-8")
-
-    def write(
-        self,
-        root_fields,
-        fine_fields,
-        *,
-        output_index,
-        simulation_step,
-        time,
-        root_spacing,
-        fine_spacing,
-        root_origin,
-        fine_origin,
-        root_ghost_cells,
-        fine_ghost_cells,
-        patch_spec,
-        root_grid_position=(0.0, 0.0, 0.0),
-        fine_grid_position=(0.0, 0.0, 0.0),
-    ):
-        """Write one complete two-patch output and update viewer metadata."""
-
-        output_index = int(output_index)
-        simulation_step = int(simulation_step)
-        time = float(time)
-        if output_index < 0 or simulation_step < 0:
-            raise ValueError("output_index and simulation_step must be non-negative")
-        if not np.isfinite(time):
-            raise ValueError("time must be finite")
-        if not isinstance(root_fields, Mapping) or not isinstance(
-            fine_fields, Mapping
-        ):
-            raise ValueError(
-                "FMR patch-series output requires exactly one field map per level"
-            )
-        root_spacing = _float_3tuple(root_spacing, "root_spacing")
-        fine_spacing = _float_3tuple(fine_spacing, "fine_spacing")
-        root_origin = _float_3tuple(root_origin, "root_origin")
-        fine_origin = _float_3tuple(fine_origin, "fine_origin")
-        root_position = _float_3tuple(
-            root_grid_position, "root_grid_position"
-        )
-        fine_position = _float_3tuple(
-            fine_grid_position, "fine_grid_position"
-        )
-        fine_ghost_tuple = _integer_3tuple(
-            fine_ghost_cells, "fine_ghost_cells"
-        )
-        if fine_ghost_tuple != (int(patch_spec.ghost_width),) * 3:
-            raise ValueError(
-                "fine_ghost_cells must match FMRPatchSpec.ghost_width"
-            )
-
-        root_active = _strip_ghost_cells(root_fields, root_ghost_cells)
-        fine_active = _strip_ghost_cells(fine_fields, fine_ghost_tuple)
-        root_shape, fine_shape = self._validate_topology(
-            root_active,
-            fine_active,
-            root_spacing,
-            fine_spacing,
-            root_origin,
-            fine_origin,
-            root_position,
-            fine_position,
-            patch_spec,
-        )
-
-        # Reject manifest conflicts before creating or replacing patch files.
-        existing = self._parse_manifest()
-        candidate_indices = sorted(set(existing) | {output_index})
-        if candidate_indices != list(range(len(candidate_indices))):
-            raise ValueError(
-                "saved output indices must be contiguous and start at zero"
-            )
-        if output_index in existing and not np.isclose(
-            existing[output_index][0],
-            float(time),
-            rtol=_ALIGNMENT_RTOL,
-            atol=_ALIGNMENT_ATOL,
-        ):
-            raise ValueError(
-                f"output index {output_index} already has conflicting time "
-                f"{existing[output_index][0]} in the VisIt manifest"
-            )
-        self._validate_existing_outputs(
-            existing,
-            root_active,
-            fine_active,
-            root_shape,
-            fine_shape,
-            root_spacing,
-            fine_spacing,
-            root_origin,
-            fine_origin,
-            root_position,
-            fine_position,
-            patch_spec,
-            output_index,
-            simulation_step,
-        )
-
-        if jax.process_index() == 0:
-            for level, patch in self._PATCHES:
-                self._preflight_relative_alias(
-                    self._output_path(level, patch, output_index, "opmd"),
-                    self._output_path(level, patch, output_index, "h5"),
-                )
-
-        self._write_patch(
-            0,
-            root_active,
-            root_shape,
-            root_spacing,
-            root_origin,
-            root_position,
-            patch_spec,
-            output_index,
-            simulation_step,
-            time,
-        )
-        self._write_patch(
-            1,
-            fine_active,
-            fine_shape,
-            fine_spacing,
-            fine_origin,
-            fine_position,
-            patch_spec,
-            output_index,
-            simulation_step,
-            time,
-        )
-
-        if jax.process_index() == 0:
-            for level, patch in self._PATCHES:
-                h5_path = self._output_path(
-                    level, patch, output_index, "h5"
-                )
-                alias_path = self._output_path(
-                    level, patch, output_index, "opmd"
-                )
-                self._ensure_relative_alias(alias_path, h5_path)
-                self._ensure_helper(
-                    self._helper_path(level, patch),
-                    self._pattern(level, patch, "h5").name,
-                )
-            self._rewrite_manifest(output_index, float(time))
-
-        return self.visit_path
 
     def _rewrite_hierarchy_manifest(self, output_index, time, level_count):
         groups = self._parse_manifest(level_count)
@@ -985,8 +656,16 @@ class FMRPatchSeriesWriter:
         ghost_cells,
         hierarchy,
         grid_positions=None,
+        layouts=None,
     ):
-        """Write one synchronous output for every level in ``hierarchy``."""
+        """Write every patch, optionally extracting owned tiled samples.
+
+        Tiled export supports one process and copies addressable owned chunks
+        to host memory; it never assembles a global field on an accelerator.
+        Origins are active patch origins for both array layouts.
+        Already-owned patch maps use zero ghost cells on every patch and no
+        layouts; their shapes and hierarchy metadata are validated as usual.
+        """
         level_fields = tuple(level_fields)
         level_count = len(level_fields)
         output_index, simulation_step = int(output_index), int(simulation_step)
@@ -1005,16 +684,25 @@ class FMRPatchSeriesWriter:
                           for value in grid_positions)
         ghosts = tuple(_integer_3tuple(value, "ghost_cells")
                        for value in ghost_cells)
-        if ghosts[0] != (0, 0, 0):
-            # Root ghost zones are supported by the generic stripper, but the
-            # hierarchy geometry and solver currently define a bare root grid.
-            raise ValueError("the FMR root level must not have ghost cells")
-        for level in range(1, level_count):
-            expected = (int(hierarchy.patches[level - 1].ghost_width),) * 3
-            if ghosts[level] != expected:
-                raise ValueError("child ghost width does not match hierarchy")
-        active_fields = tuple(_strip_ghost_cells(fields, ghost)
-                              for fields, ghost in zip(level_fields, ghosts))
+        if layouts is None:
+            if ghosts[0] != (0, 0, 0):
+                raise ValueError("the FMR root level must not have ghost cells")
+            for level in range(1, level_count):
+                expected = (int(hierarchy.patches[level - 1].ghost_width),) * 3
+                if ghosts[level] not in ((0, 0, 0), expected):
+                    raise ValueError("child ghost width does not match hierarchy")
+            active_fields = tuple(_strip_ghost_cells(fields, ghost)
+                                  for fields, ghost in zip(level_fields, ghosts))
+        else:
+            if jax.process_count() != 1:
+                raise ValueError("tiled FMR output currently supports one process")
+            if len(layouts) != level_count:
+                raise ValueError("one tile layout is required per patch")
+            if any(ghost != (layout.get("guard_cells", 4),) * 3
+                   for ghost, layout in zip(ghosts, layouts)):
+                raise ValueError("ghost width does not match the tile layout")
+            active_fields = tuple(tiled_output_fields(fields, layout)
+                                  for fields, layout in zip(level_fields, layouts))
         shapes = self._validate_topology(
             active_fields, spacings, origins, positions, hierarchy
         )
@@ -1028,21 +716,25 @@ class FMRPatchSeriesWriter:
             atol=_ALIGNMENT_ATOL,
         ):
             raise ValueError("output index already has conflicting time")
-        if output_index in existing:
+        if existing:
+            # Appending after a process restart must preserve the topology
+            # recorded by the previous output, just as rewriting an index does.
+            saved_index = output_index if output_index in existing else max(existing)
             for level in range(level_count):
-                path = self._output_path(level, 0, output_index, "h5")
+                path = self._output_path(*self._patches[level], saved_index, "h5")
                 if not path.is_file() or path.is_symlink():
                     raise ValueError(f"VisIt manifest references a missing patch: {path}")
                 series = io.Series(str(path), io.Access.read_only)
                 try:
-                    iteration = series.iterations[output_index]
-                    if int(iteration.get_attribute("simulationStep")) != simulation_step:
+                    iteration = series.iterations[saved_index]
+                    saved_step = int(iteration.get_attribute("simulationStep"))
+                    if saved_index == output_index and saved_step != simulation_step:
                         raise ValueError("output index has conflicting simulationStep")
                     if not np.isclose(iteration.dt, self.dt,
                                       rtol=_ALIGNMENT_RTOL, atol=_ALIGNMENT_ATOL):
                         raise ValueError("FMR patch-series solver timestep changed")
                     expected_attributes = self._iteration_attributes(
-                        level, shapes[level], hierarchy, simulation_step
+                        level, shapes[level], hierarchy, saved_step
                     )
                     for name, expected in expected_attributes.items():
                         if not np.array_equal(
@@ -1076,8 +768,8 @@ class FMRPatchSeriesWriter:
                 finally:
                     series.close()
         for level in range(level_count):
-            h5_path = self._output_path(level, 0, output_index, "h5")
-            alias_path = self._output_path(level, 0, output_index, "opmd")
+            h5_path = self._output_path(*self._patches[level], output_index, "h5")
+            alias_path = self._output_path(*self._patches[level], output_index, "opmd")
             self._preflight_relative_alias(alias_path, h5_path)
 
         for level in range(level_count):
@@ -1088,11 +780,12 @@ class FMRPatchSeriesWriter:
             )
         if jax.process_index() == 0:
             for level in range(level_count):
-                h5_path = self._output_path(level, 0, output_index, "h5")
-                alias_path = self._output_path(level, 0, output_index, "opmd")
+                h5_path = self._output_path(*self._patches[level], output_index, "h5")
+                alias_path = self._output_path(*self._patches[level], output_index, "opmd")
                 self._ensure_relative_alias(alias_path, h5_path)
                 self._ensure_helper(
-                    self._helper_path(level, 0), self._pattern(level, 0, "h5").name
+                    self._helper_path(*self._patches[level]),
+                    self._pattern(*self._patches[level], "h5").name
                 )
             self._rewrite_hierarchy_manifest(output_index, time, level_count)
         return self.visit_path

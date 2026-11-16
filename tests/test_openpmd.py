@@ -12,7 +12,7 @@ from JAX_BSSN.cartoon.spherical_symmetry import (
     compact_cartoon_state,
 )
 from JAX_BSSN.diagnostics.openpmd import FMRPatchSeriesWriter, OpenPMDWriter
-from JAX_BSSN.fmr.refinement import FMRHierarchySpec, FMRPatchSpec
+from JAX_BSSN.fmr import FMRHierarchySpec, FMRPatchSpec
 
 
 PATCH_SPEC = FMRPatchSpec((1, 1, 1), (3, 3, 3))

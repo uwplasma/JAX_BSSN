@@ -19,8 +19,11 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[demos,test]"
 ```
 
-Install a JAX build appropriate for the intended CPU or accelerator when the
-default dependency does not match the target hardware.
+The supported, tested minimum is JAX 0.9.2 with JAXLIB 0.9.2. Package metadata
+requires `jax>=0.9.2` and `jaxlib>=0.9.2`; JAX supplies the compatible JAXLIB
+version constraints. The default installation supports CPU execution. For CUDA,
+install the appropriate JAX accelerator extra in the same environment; see the
+[installation guide](docs/installation.rst).
 
 ## Supported demos
 

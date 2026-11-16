@@ -12,8 +12,8 @@ authors = [
 license = { file = "LICENSE" }
 
 dependencies = [
-    "jax",
-    "jaxlib",
+    "jax>=0.9.2",
+    "jaxlib>=0.9.2",
     "numpy",
     "matplotlib",
     "openPMD-api",
@@ -39,5 +39,6 @@ packages = [
     "JAX_BSSN.diagnostics",
     "JAX_BSSN.evolution",
     "JAX_BSSN.fmr",
+    "JAX_BSSN.parallel",
     "JAX_BSSN.utilities",
 ]

@@ -1,0 +1,12 @@
+[run]
+source = JAX_BSSN
+relative_files = True
+parallel = True
+patch = subprocess
+
+[report]
+show_missing = True
+precision = 2
+
+[html]
+directory = htmlcov

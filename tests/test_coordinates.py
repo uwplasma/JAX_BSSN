@@ -6,9 +6,11 @@ convention with the native PyPIC3D staggered field locations.
 """
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from JAX_BSSN.bssn.variables import BSSNParameters
 from JAX_BSSN.evolution.coordinates import axis_coordinates, cylindrical_volume_weights, grid_coordinates
+from tests.initial_data import create_coordinate_arrays, linear_wave_data
 
 jax.config.update('jax_enable_x64', True)
 
@@ -62,3 +64,18 @@ def test_default_grid_coordinates_are_unstaggered():
     p, shape = params(), (SIZE, SIZE + 1, SIZE + 2)
     for explicit, default in zip(grid_coordinates(shape, p, jnp.float64, ("C", "C", "C")), grid_coordinates(shape, p, jnp.float64)):
         assert bool(jnp.array_equal(explicit, default))
+
+
+def test_shared_fixture_arrays_are_strongly_typed():
+    """Weak-typed fixtures would silently promote in convergence measurements.
+
+    ``tests/initial_data`` feeds the gauge-wave and tiled convergence tests, whose
+    observed orders depend on the sampled dtype rather than on x64 promotion rules.
+    """
+    coordinates = create_coordinate_arrays(8, 8, 8, 0.125)
+    variables = linear_wave_data(8, 8, 8, 0.125)
+    single = create_coordinate_arrays(8, 8, 8, np.float32(0.125))
+
+    assert all(not coordinate.weak_type for coordinate in coordinates)
+    assert all(not field.weak_type for field in variables)
+    assert all(coordinate.dtype == jnp.float32 for coordinate in single)
