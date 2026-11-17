@@ -299,15 +299,11 @@ def tiled_output_fields(field_map, layout):
     """
     if jax.process_count() != 1:
         raise ValueError("tiled FMR output currently supports one process")
-    counts = tuple(layout["mesh"].devices.shape)
-    widths = tuple(layout["tile_shape"])
-    endpoints = tuple(layout.get("upper_endpoints", (False,) * 3))
-    g = layout.get("guard_cells", 4)
-    shape = tuple(count * width + int(endpoint)
-                  for count, width, endpoint in zip(counts, widths, endpoints))
+    counts, widths, g, endpoints = layout.geometry
+    shape = layout.active_shape
 
     def owned_array(value):
-        if value.shape != counts + tuple(width + 2*g for width in widths):
+        if value.shape != counts + layout.allocated_shape:
             raise ValueError("output field does not match its tile layout")
         result = np.empty(shape, dtype=value.dtype)
         for shard in value.addressable_shards:
@@ -698,7 +694,7 @@ class FMRPatchSeriesWriter:
                 raise ValueError("tiled FMR output currently supports one process")
             if len(layouts) != level_count:
                 raise ValueError("one tile layout is required per patch")
-            if any(ghost != (layout.get("guard_cells", 4),) * 3
+            if any(ghost != (layout.guard_cells,) * 3
                    for ghost, layout in zip(ghosts, layouts)):
                 raise ValueError("ghost width does not match the tile layout")
             active_fields = tuple(tiled_output_fields(fields, layout)

@@ -51,10 +51,10 @@ def main():
         shard = filled.trace_K.addressable_shards[0]
         owner = tuple(index.start or 0 for index in shard.index[-6:-3])
         layout = layouts[1]
-        width = layout["tile_shape"]
-        guard = layout["guard_cells"]
+        width = layout.tile_shape
+        guard = layout.guard_cells
         global_shape = tuple(n*count+int(endpoint) for n,count,endpoint in zip(
-            width, mesh.devices.shape, layout["upper_endpoints"]))
+            width, mesh.devices.shape, layout.upper_endpoints))
         nodes = [owner[d]*width[d]+jnp.arange(width[d]+2*guard)-guard for d in range(3)]
         x, y, z = jnp.meshgrid(*nodes, indexing="ij")
         shell = ((x<0)|(x>=global_shape[0])|(y<0)|(y>=global_shape[1])
@@ -70,14 +70,14 @@ def main():
         root_shard = restricted.trace_K.addressable_shards[0]
         root_owner = tuple(index.start or 0 for index in root_shard.index[-6:-3])
         root_layout = layouts[0]
-        g = root_layout["guard_cells"]
-        root_nodes = [root_owner[d]*root_layout["tile_shape"][d]
-                      +jnp.arange(root_layout["tile_shape"][d]) for d in range(3)]
+        g = root_layout.guard_cells
+        root_nodes = [root_owner[d]*root_layout.tile_shape[d]
+                      +jnp.arange(root_layout.tile_shape[d]) for d in range(3)]
         rx, ry, rz = jnp.meshgrid(*root_nodes, indexing="ij")
         covered = jnp.ones(rx.shape, dtype=bool)
         for node, lo, hi in zip((rx, ry, rz), spec.coarse_lo, spec.coarse_hi):
             covered &= (node >= lo) & (node <= hi)
-        owned = tuple(slice(g, g+n) for n in root_layout["tile_shape"])
+        owned = tuple(slice(g, g+n) for n in root_layout.tile_shape)
         root_values = root_shard.data[(0, 0, 0) + owned]
         injection_error = float(jnp.max(jnp.where(covered, jnp.abs(root_values+17.), 0)))
         assert injection_error == 0., injection_error

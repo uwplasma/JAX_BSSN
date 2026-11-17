@@ -184,24 +184,33 @@ class TestTiledBoundaries(unittest.TestCase):
         self.assertTrue(bool(jnp.array_equal(original, explicit)))
 
     def test_initializer_rejects_sommerfeld_on_a_reduced_axis(self):
-        from JAX_BSSN.parallel import initialize_tiled_bssn, make_field_mesh
+        from JAX_BSSN.parallel import initialize_tiled_bssn, make_field_mesh, TileLayout
 
         params = BSSNParameters(yl_bc=1, yr_bc=1)
         with self.assertRaisesRegex(ValueError, "Reduced Cartesian axes must be periodic"):
             initialize_tiled_bssn(
-                None, params, mesh=make_field_mesh((1, 1, 1)), tile_shape=(8, 1, 1)
+                None, params, TileLayout(make_field_mesh((1, 1, 1)), (8, 1, 1))
             )
 
     def test_periodic_mad_upper_endpoint_requires_five_guards(self):
-        from JAX_BSSN.parallel import initialize_tiled_bssn, make_field_mesh, map_tiled
+        from JAX_BSSN.parallel import (
+            initialize_tiled_bssn, make_field_mesh, map_tiled, tiled_rk4_step, TileLayout,
+        )
 
         params = BSSNParameters(dx=1.0, mad_q=0.35)
-        layout = dict(
-            mesh=make_field_mesh((1, 1, 1)), tile_shape=(8, 1, 1),
+        layout = TileLayout(
+            make_field_mesh((1, 1, 1)), (8, 1, 1),
             upper_endpoints=(True, False, False),
         )
         with self.assertRaisesRegex(ValueError, "five guard cells"):
-            initialize_tiled_bssn(None, params, guard_cells=4, **layout)
+            initialize_tiled_bssn(None, params, layout)
+
+        # The rule must also hold on the evolution path. A state built with
+        # plain D4 and then evolved with general MAD would otherwise read
+        # jnp.roll(field, -4) past the owned endpoint and silently wrap.
+        plain = initialize_tiled_bssn(None, params._replace(mad_q=1.0), layout)
+        with self.assertRaisesRegex(ValueError, "five guard cells"):
+            tiled_rk4_step(plain, params, layout)
 
         def wave_lapse(coordinates, local_params):
             x, y, z = coordinates
@@ -213,10 +222,11 @@ class TestTiledBoundaries(unittest.TestCase):
             return BSSNVariables(metric, one, jnp.zeros_like(metric), zero,
                                  vector, lapse, vector)
 
-        state = initialize_tiled_bssn(wave_lapse, params, guard_cells=5, **layout)
+        deep = layout._replace(guard_cells=5)
+        state = initialize_tiled_bssn(wave_lapse, params, deep)
         derivative = map_tiled(
             lambda field, p: diff1_upwind_physical(field, 1.0, 0, p),
-            state.lapse, params, guard_cells=5, **layout,
+            state.lapse, params, deep,
         )
         field = (1 + 0.1 * jnp.sin(2 * jnp.pi * jnp.arange(9) / 9))[:, None, None]
         expected = diff1_upwind_physical(field, 1.0, 0, params)[-1, 0, 0]

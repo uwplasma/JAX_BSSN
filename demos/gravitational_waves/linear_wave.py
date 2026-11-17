@@ -30,7 +30,6 @@ from JAX_BSSN.fmr import (
     fmr_rk4_step,
     initialize_tiled_fmr,
 )
-from JAX_BSSN.fmr.transfer import active_shape
 from JAX_BSSN.parallel import map_tiled
 
 
@@ -133,13 +132,13 @@ def run_linear_wave(
     @jax.jit
     def compute_output_fields(values):
         return tuple(map_tiled(
-            diagnostic_fields, state, params, output_template={
+            diagnostic_fields, state, params, layout, output_template={
                 "h_plus": state.lapse, "lapse": state.lapse,
                 "shift": tuple(state.shift[i] for i in range(3)),
                 "K": state.trace_K, "W": state.conformal_factor,
                 "hamiltonian_constraint": state.lapse,
                 "momentum_constraint": tuple(state.shift[i] for i in range(3)),
-            }, **layout,
+            },
         ) for state, params, layout in zip(values, parameters, layouts))
 
     output_steps = tuple(int(step) for step in np.rint(
@@ -147,7 +146,7 @@ def run_linear_wave(
     output_indices = {step: index for index, step in enumerate(output_steps)}
     writer = FMRPatchSeriesWriter(output_path, dt=dt)
 
-    shapes = tuple(active_shape(layout) for layout in layouts)
+    shapes = tuple(layout.active_shape for layout in layouts)
     coordinates = tuple(
         jnp.broadcast_to((params.x_min + jnp.arange(shape[0])*params.dx)[:, None, None], shape)
         for params, shape in zip(parameters, shapes)
