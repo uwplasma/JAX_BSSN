@@ -97,46 +97,6 @@ def _active_field_shape(field, field_name, level_name):
     return shapes[0]
 
 
-def _validate_field_maps(root_fields, fine_fields):
-    if not root_fields or not fine_fields:
-        raise ValueError("root and fine patches must both contain fields")
-
-    root_names = set(root_fields)
-    fine_names = set(fine_fields)
-    if root_names != fine_names:
-        missing = sorted(root_names - fine_names)
-        extra = sorted(fine_names - root_names)
-        raise ValueError(
-            "root and fine patches have incompatible field sets; "
-            f"missing={missing}, extra={extra}"
-        )
-
-    patch_shapes = []
-    for level_name, fields in (("root patch", root_fields),
-                               ("fine patch", fine_fields)):
-        active_shape = None
-        for field_name, field in fields.items():
-            shape = _active_field_shape(field, field_name, level_name)
-            if active_shape is None:
-                active_shape = shape
-            elif shape != active_shape:
-                raise ValueError(
-                    f"fields on {level_name} do not share one active mesh shape"
-                )
-        patch_shapes.append(active_shape)
-
-    for name in root_names:
-        root_kind = _field_kind(root_fields[name])
-        fine_kind = _field_kind(fine_fields[name])
-        if root_kind != fine_kind:
-            raise ValueError(
-                f"field {name!r} changes from {root_kind} on the root patch "
-                f"to {fine_kind} on the fine patch"
-            )
-
-    return tuple(patch_shapes)
-
-
 def _configure_mesh(mesh, grid_spacing, grid_global_offset):
     mesh.geometry = io.Geometry.cartesian
     mesh.data_order = io.Data_Order.C if hasattr(io, "Data_Order") else "C"

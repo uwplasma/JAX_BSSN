@@ -49,10 +49,13 @@ reflection parity.
 
 An extra endpoint on a periodic axis needs **five** allocated guards when
 ``mad_q != 1``: the endpoint consumes one upper slot, and the MAD upwind stencil
-still needs four neighbors beyond it. ``initialize_tiled_bssn`` rejects this
-combination with only four guards. Four remain sufficient when that axis uses
-Sommerfeld (which forces D4) or when ``mad_q == 1``. Keep the guard depth suitable
-for the boundary codes and MAD setting throughout the run.
+still needs four neighbors beyond it. ``require_bssn_guards`` rejects this
+combination with only four guards, both when the state is built and at every
+halo refresh, so a state initialized under one ``mad_q`` cannot be evolved
+under another that its guard depth does not support. Four remain sufficient
+when that axis uses Sommerfeld (which forces D4) or when ``mad_q == 1``. Keep
+the guard depth suitable for the boundary codes and MAD setting throughout the
+run.
 
 The existing face codes in ``BSSNParameters`` remain global. The tiled mapper
 supplies ``guard_cells``, ``owned_shape``, ``owned_faces`` and padded local
@@ -76,19 +79,19 @@ A minimal ``simulation.py`` is:
     import jax
     from JAX_BSSN.bssn.variables import BSSNParameters
     from JAX_BSSN.parallel import (
-        make_field_mesh, initialize_tiled_bssn,
+        TileLayout, make_field_mesh, initialize_tiled_bssn,
         tiled_rk4_step, tiled_constraint_norms,
     )
 
     params = BSSNParameters(dx=0.1, dt=0.001)
     mesh = make_field_mesh((2, 1, 1))
-    layout = dict(
-        mesh=mesh, tile_shape=(16, 16, 16), guard_cells=4,
+    layout = TileLayout(
+        mesh, tile_shape=(16, 16, 16), guard_cells=4,
         upper_endpoints=(False, False, False),
     )
-    state = initialize_tiled_bssn(None, params, **layout)  # flat spacetime
-    state = tiled_rk4_step(state, params, **layout)
-    norms = tiled_constraint_norms(state, params, **layout)
+    state = initialize_tiled_bssn(None, params, layout)  # flat spacetime
+    state = tiled_rk4_step(state, params, layout)
+    norms = tiled_constraint_norms(state, params, layout)
     if jax.process_index() == 0:
         print({name: float(value) for name, value in norms.items()})
 
@@ -120,7 +123,7 @@ parameters with ``guard_cells=0``. It must return the full owned tile:
             conformal_connection=vector, lapse=lapse, shift=vector,
         )
 
-    state = initialize_tiled_bssn(initial_data, params, **layout)
+    state = initialize_tiled_bssn(initial_data, params, layout)
 
 For arbitrary scalar, vector, or tensor initial fields,
 ``initialize_tiled_field`` has the same callback convention and accepts
@@ -129,7 +132,7 @@ For arbitrary scalar, vector, or tensor initial fields,
 Local equation and coupling callbacks
 ------------------------------------
 
-``map_tiled(function, values, params, **layout)`` calls
+``map_tiled(function, values, params, layout)`` calls
 ``function(local_values, local_params)`` on padded local arrays. Leading
 component axes remain present; the three tile axes are removed. The returned
 tree must retain the padded spatial shape. Supply ``output_template`` when
@@ -138,11 +141,11 @@ refresh halos itself: use ``refresh_bssn_halos`` or ``refresh_tiled_field``
 before callbacks that differentiate or interpolate their input.
 
 ``compute_tiled_bssn_rhs`` refreshes the state and evaluates the vacuum RHS.
-``compute_tiled_bssn_rhs_with_matter`` additionally receives tiled
-``energy_density``, ``momentum_density`` and ``spatial_stress`` with scalar,
-vector and tensor component layouts. It refreshes source halos, including
-momentum density needed by constraint damping. Matter quantities use the same
-physical Eulerian conventions as the serial equations.
+``compute_tiled_bssn_rhs_with_matter(state, params, layout, energy_density,
+momentum_density, spatial_stress)`` additionally receives those tiled sources
+with scalar, vector and tensor component layouts. It refreshes source halos,
+including momentum density needed by constraint damping. Matter quantities use
+the same physical Eulerian conventions as the serial equations.
 
 ``refresh_bssn_halos`` and ``prepare_tiled_state`` accept
 ``ghost_fill(tiled_state, params)`` as a keyword callback. It runs after the

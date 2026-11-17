@@ -75,7 +75,7 @@ JAX_BSSN/
 ├── cartoon/       # spherical and axisymmetric reconstruction/evolution
 ├── evolution/     # derivatives, boundaries, RHS assembly, projections, RK4
 ├── fmr/           # nested-patch geometry, transfers, stage-synchronous RK4
-├── diagnostics/   # reductions, reporting, plotting, openPMD
+├── diagnostics/   # constraint reductions, openPMD output
 └── utilities/     # reusable initial-data and numerical helper routines
 ```
 

@@ -11,7 +11,6 @@ from typing import NamedTuple
 from jax.sharding import PartitionSpec as P
 
 MESH_AXES = ("tile_x", "tile_y", "tile_z")
-SCALAR_TILE_SPEC = P(*MESH_AXES, None, None, None)
 VECTOR_TILE_SPEC = P(None, *MESH_AXES, None, None, None)
 
 FACE_NAMES = ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc")
@@ -34,6 +33,10 @@ class TileLayout(NamedTuple):
     than ``tile_shape * tiles``; the last tile owns that extra C endpoint, and
     it occupies the first nominal upper-guard slot rather than a slot of its
     own.  Everything downstream derives its geometry from these four fields.
+
+    ``tile_shape`` and ``upper_endpoints`` must be tuples, as annotated: a
+    layout is the cache key of ``make_tiled_halo_op``, so an unhashable field
+    raises there rather than silently recompiling the sweep.
     """
 
     mesh: object

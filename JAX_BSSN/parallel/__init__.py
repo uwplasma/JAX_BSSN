@@ -1,11 +1,11 @@
 """Cartesian BSSN tiling compatible with the PyPIC3D device mesh."""
 
 from .layout import (
-    FACE_NAMES, FACE_NAME_PAIRS, MESH_AXES, SCALAR_TILE_SPEC, VECTOR_TILE_SPEC,
+    FACE_NAMES, FACE_NAME_PAIRS, MESH_AXES, VECTOR_TILE_SPEC,
     TileLayout, require_bssn_guards, tile_spec,
 )
 from .communication import (
-    axis_permutations, make_field_mesh, make_tiled_halo_op, refresh_tiled_field,
+    make_field_mesh, make_tiled_halo_op, refresh_tiled_field,
 )
 from .initialization import initialize_tiled_bssn, initialize_tiled_field
 from .evolution import (
