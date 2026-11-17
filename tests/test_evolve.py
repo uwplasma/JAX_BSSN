@@ -14,8 +14,8 @@ import jax
 import sys
 import os
 
-# Add the project root to the Python path
-sys.path.append('/home/christopherwoolford/Documents/Research/Numerical_Relativity/JAX_BSSN')
+# Add the project root (the directory above tests/) to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from JAX_BSSN.evolution.time_evolve import enforce_algebraic_constraints, rk4_step
 from JAX_BSSN.bssn.conformal_connection import evolve_conformal_connection
