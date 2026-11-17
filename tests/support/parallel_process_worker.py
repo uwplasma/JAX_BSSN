@@ -26,20 +26,21 @@ def main():
         from JAX_BSSN.parallel import (
             compute_tiled_bssn_rhs, initialize_tiled_bssn,
             initialize_tiled_field, make_field_mesh, tiled_constraint_norms,
+            TileLayout,
         )
 
         assert jax.process_count() == 2
         assert jax.local_device_count() == 1
         mesh = make_field_mesh((2, 1, 1))
         assert {device.process_index for device in mesh.devices.flat} == {0, 1}
-        layout = dict(mesh=mesh, tile_shape=(8, 8, 8), guard_cells=4)
+        layout = TileLayout(mesh, (8, 8, 8), 4)
         params = BSSNParameters(dx=1.0, dt=0.01)
 
         def encoded_coordinates(coordinates, local_params):
             x, y, z = coordinates
             return x + 100 * y + 10000 * z
 
-        encoded = initialize_tiled_field(encoded_coordinates, params, **layout)
+        encoded = initialize_tiled_field(encoded_coordinates, params, layout)
         assert not encoded.is_fully_addressable
         assert len(encoded.addressable_shards) == 1
         shard = encoded.addressable_shards[0]
@@ -52,8 +53,8 @@ def main():
         halo_error = float(jnp.max(jnp.abs(shard.data[0, 0, 0] - expected)))
         assert halo_error == 0.0, halo_error
 
-        state = initialize_tiled_bssn(None, params, **layout)
-        rhs = compute_tiled_bssn_rhs(state, params, **layout)
+        state = initialize_tiled_bssn(None, params, layout)
+        rhs = compute_tiled_bssn_rhs(state, params, layout)
         rhs_error = 0.0
         for field in rhs:
             assert not field.is_fully_addressable
@@ -64,7 +65,7 @@ def main():
             rhs_error = max(rhs_error, float(jnp.max(jnp.abs(owned))))
         assert rhs_error < 1.0e-12, rhs_error
 
-        norms = tiled_constraint_norms(state, params, **layout)
+        norms = tiled_constraint_norms(state, params, layout)
         assert len(norms) == 10
         constraint_error = max(float(value) for value in norms.values())
         assert constraint_error < 1.0e-12, constraint_error

@@ -11,7 +11,7 @@ from jax.sharding import NamedSharding, PartitionSpec
 
 from JAX_BSSN.diagnostics.openpmd import FMRPatchSeriesWriter, tiled_output_fields
 from JAX_BSSN.fmr import FMRHierarchySpec, FMRPatchSpec
-from JAX_BSSN.parallel import make_field_mesh
+from JAX_BSSN.parallel import make_field_mesh, TileLayout
 
 
 class TestFMRPatchOutput(unittest.TestCase):
@@ -68,14 +68,12 @@ class TestFMRPatchOutput(unittest.TestCase):
     @unittest.skipUnless(jax.device_count() >= 2, "requires two logical devices")
     def test_tiled_export_preserves_owned_upper_endpoint_and_discards_all_guards(self):
         mesh = make_field_mesh((2, 1, 1))
-        layouts = (dict(mesh=mesh, tile_shape=(4, 8, 8), guard_cells=4,
-                        upper_endpoints=(False,) * 3),) + tuple(
-            dict(mesh=mesh, tile_shape=(2, 4, 4), guard_cells=5,
-                 upper_endpoints=(True,) * 3) for _ in range(3)
+        layouts = (TileLayout(mesh, (4, 8, 8), 4, (False,) * 3),) + tuple(
+            TileLayout(mesh, (2, 4, 4), 5, (True,) * 3) for _ in range(3)
         )
         fields = []
         for value, layout in zip(self.values, layouts):
-            widths, g, endpoints = layout["tile_shape"], layout["guard_cells"], layout["upper_endpoints"]
+            widths, g, endpoints = layout.tile_shape, layout.guard_cells, layout.upper_endpoints
             padded = jnp.full((2, 1, 1) + tuple(n + 2*g for n in widths), -999.)
             for tile_x in range(2):
                 owned = tuple(n + int(end and i == count - 1)

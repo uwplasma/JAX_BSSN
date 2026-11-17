@@ -13,18 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from JAX_BSSN.parallel.communication import MESH_AXES, VECTOR_TILE_SPEC
-
-
-def layout_geometry(layout):
-    return (tuple(layout["mesh"].devices.shape), tuple(layout["tile_shape"]),
-            int(layout.get("guard_cells", 4)),
-            tuple(layout.get("upper_endpoints", (False,) * 3)))
-
-
-def active_shape(layout):
-    counts, widths, _, endpoints = layout_geometry(layout)
-    return tuple(n * c + int(e) for n, c, e in zip(widths, counts, endpoints))
+from JAX_BSSN.parallel.layout import MESH_AXES, VECTOR_TILE_SPEC
 
 
 def pack_state(state):
@@ -65,6 +54,21 @@ def transfer_rounds(edges):
     return tuple(tuple(batch) for rounds in groups.values() for batch in rounds)
 
 
+def lagrange_weights(targets, nodes):
+    """Lagrange basis values at ``targets`` for each row of stencil ``nodes``.
+
+    ``nodes`` is one row of six integer sample indices per target, so the
+    result weights exactly those samples in the separable interpolation.
+    """
+    width = nodes.shape[1]
+    coefficient = np.ones(nodes.shape)
+    for k in range(width):
+        for m in range(width):
+            if k != m:
+                coefficient[:, k] *= (targets - nodes[:, m]) / (nodes[:, k] - nodes[:, m])
+    return coefficient
+
+
 def interpolation_segments(tile, axis, parent_geometry, child_geometry,
                            spec, root, boundary_codes):
     """Split an axis where source ownership or exterior-shell status changes."""
@@ -72,6 +76,9 @@ def interpolation_segments(tile, axis, parent_geometry, child_geometry,
     cc, cw, cg, ce = child_geometry
     parent_size = pw[axis] * pc[axis] + int(pe[axis])
     child_size = cw[axis] * cc[axis] + int(ce[axis])
+    # Consecutive fine samples advance the coarse target by one refined step;
+    # anything else means the segment is no longer contiguous.
+    step = 1.0 / spec.refinement_ratio
     segments, current = [], []
     previous = None
     for local in range(cw[axis] + 2 * cg):
@@ -94,7 +101,7 @@ def interpolation_segments(tile, axis, parent_geometry, child_geometry,
             raise ValueError("child prolongation stencil exceeds parent allocation")
         exterior = -1 if fine < 0 else (1 if fine >= child_size else 0)
         key = (owner, exterior)
-        if current and (key != previous[0] or not math.isclose(target - previous[1], .5)):
+        if current and (key != previous[0] or not math.isclose(target - previous[1], step)):
             segments.append(current)
             current = []
         current.append((local, local_target, owner, exterior))
@@ -125,12 +132,7 @@ def prolongation_routes(parent_geometry, child_geometry, spec, root, boundary_co
                 starts.append(start)
                 shapes.append(int(nodes.max()) - start + 1)
                 indices.append(nodes - start)
-                coefficient = np.ones(nodes.shape)
-                for k in range(6):
-                    for m in range(6):
-                        if k != m:
-                            coefficient[:, k] *= (targets - nodes[:, m]) / (nodes[:, k] - nodes[:, m])
-                weights.append(coefficient)
+                weights.append(lagrange_weights(targets, nodes))
             edges.append(dict(source=tile_number(source, counts),
                               destination=tile_number(tile, counts),
                               source_start=tuple(starts), window_shape=tuple(shapes),
@@ -235,8 +237,8 @@ def transfer_operator(parent_geometry, child_geometry, spec, mesh, interpolate,
 def fill_tiled_fine_ghosts(parent, child, spec, *, parent_layout, child_layout,
                            parent_boundary_codes=(0,) * 6, parent_is_root=True):
     """Replace only the child's exterior shell from prepared parent data."""
-    transfer = transfer_operator(layout_geometry(parent_layout), layout_geometry(child_layout),
-                                 spec, child_layout["mesh"], True,
+    transfer = transfer_operator(parent_layout.geometry, child_layout.geometry,
+                                 spec, child_layout.mesh, True,
                                  parent_is_root, tuple(parent_boundary_codes))
     supplied = transfer(pack_state(parent), pack_state(child))
     return unpack_state(supplied, child)
@@ -244,7 +246,7 @@ def fill_tiled_fine_ghosts(parent, child, spec, *, parent_layout, child_layout,
 
 def restrict_tiled_to_coarse(parent, child, spec, *, parent_layout, child_layout):
     """Inject owned coincident child vertices into their unique parent owner."""
-    transfer = transfer_operator(layout_geometry(parent_layout), layout_geometry(child_layout),
-                                 spec, parent_layout["mesh"], False)
+    transfer = transfer_operator(parent_layout.geometry, child_layout.geometry,
+                                 spec, parent_layout.mesh, False)
     injected = transfer(pack_state(child), pack_state(parent))
     return unpack_state(injected, parent)

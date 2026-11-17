@@ -12,7 +12,7 @@ from JAX_BSSN.fmr import (
     initialize_tiled_fmr, fmr_constraint_norms,
 )
 from JAX_BSSN.fmr.tiled import patch_layout, validate_hierarchy
-from JAX_BSSN.parallel import make_field_mesh
+from JAX_BSSN.parallel import make_field_mesh, TileLayout
 
 jax.config.update("jax_enable_x64", True)
 
@@ -49,10 +49,8 @@ class TestFMRGeometry(unittest.TestCase):
         mesh = make_field_mesh((4, 1, 1))
         with self.assertRaisesRegex(ValueError, "does not fit"):
             patch_layout((23, 9, 9), mesh)
-        layout = patch_layout((25, 9, 9), mesh)
-        self.assertEqual(layout["tile_shape"], (6, 9, 9))
-        self.assertEqual(layout["upper_endpoints"], (True, False, False))
-        self.assertEqual(layout["guard_cells"], 5)
+        self.assertEqual(patch_layout((25, 9, 9), mesh),
+                         TileLayout(mesh, (6, 9, 9), 5, (True, False, False)))
 
     def test_sommerfeld_root_requires_valid_interpolation_stencils(self):
         params = BSSNParameters(xl_bc=1, xr_bc=1)

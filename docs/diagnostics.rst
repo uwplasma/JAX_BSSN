@@ -2,7 +2,7 @@ Constraints and diagnostics
 ===========================
 
 Diagnostics include hamiltonian and momentum constraint monitoring,
-as well as plotting and openPMD output.
+as well as openPMD output.
 
 Raw constraint fields
 ---------------------
@@ -31,14 +31,6 @@ Raw constraint fields
      - :math:`\tilde{\gamma}^{ij}\tilde{A}_{ij}`.
 
 
-
-Plotting and NumPy snapshots
-----------------------------
-
-``diagnostics.plotting`` provides central-slice plots, constraint-history
-plots, ``.npz`` state snapshots, and a callback-based text writer. Plotting and
-filesystem output are side effects and should be called outside compiled
-timesteps.
 
 openPMD output
 --------------

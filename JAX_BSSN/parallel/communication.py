@@ -6,15 +6,13 @@ d91140bf489dda104e5b244f60c87db77edab4d7. Only owner-to-ghost transport is
 copied: BSSN physical exteriors do not use electromagnetic wall parity.
 """
 
+from functools import lru_cache
 import math
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec as P
 
-MESH_AXES = ("tile_x", "tile_y", "tile_z")
-SCALAR_TILE_SPEC = P(*MESH_AXES, None, None, None)
-VECTOR_TILE_SPEC = P(None, *MESH_AXES, None, None, None)
+from .layout import FACE_NAMES, MESH_AXES, VECTOR_TILE_SPEC
 
 
 def make_field_mesh(tile_grid_shape):
@@ -29,42 +27,10 @@ def make_field_mesh(tile_grid_shape):
                          axis_types=(jax.sharding.AxisType.Auto,) * 3)
 
 
-def tile_spec(value):
-    """Replicate tensor indices and shard only the three tile indices."""
-    return P(*(None,) * (value.ndim - 6), *MESH_AXES, None, None, None)
-
-
-def axis_permutations(axis_size, boundary_condition=0):
-    """Return positive/negative neighbor sends, copied from PyPIC3D."""
-    if boundary_condition == 0:
-        return (tuple((i, (i + 1) % axis_size) for i in range(axis_size)),
-                tuple((i, (i - 1) % axis_size) for i in range(axis_size)))
-    return (tuple((i, i + 1) for i in range(axis_size - 1)),
-            tuple((i, i - 1) for i in range(1, axis_size)))
-
-
 def _plane(axis, index):
     result = [slice(None)] * 3
     result[axis] = index
     return tuple(result)
-
-
-def _halo_slices(axis, g):
-    return (_plane(axis, slice(0, g)), _plane(axis, slice(-g, None)),
-            _plane(axis, slice(g, 2 * g)), _plane(axis, slice(-2 * g, -g)))
-
-
-def validate_layout(mesh, tile_shape, guard_cells, upper_endpoints):
-    """Protect the single-hop slab stencil and the shared tile topology."""
-    if tuple(mesh.axis_names) != MESH_AXES:
-        raise ValueError(f"BSSN requires mesh axes {MESH_AXES}")
-    if guard_cells < 1:
-        raise ValueError("Tiled fields require at least one guard cell")
-    for width, count in zip(tile_shape, mesh.devices.shape):
-        if width < 1:
-            raise ValueError("Tiled fields require at least one owned sample per axis")
-        if count > 1 and width < guard_cells:
-            raise ValueError("A tile with neighbors must be at least as wide as its halo")
 
 
 def _sweep_tile(tile, boundary_codes, mesh_shape, tile_shape, g,
@@ -72,41 +38,52 @@ def _sweep_tile(tile, boundary_codes, mesh_shape, tile_shape, g,
     """Exchange slabs in x/y/z order, carrying edges and corners with them."""
     for axis, axis_name in enumerate(MESH_AXES):
         width, count = tile_shape[axis], mesh_shape[axis]
-        index = jax.lax.axis_index(axis_name)
-        last = index == count - 1
         endpoint = upper_endpoints[axis]
-        lower, upper, low_owned, high_owned = _halo_slices(axis, g)
+        lower, upper = _plane(axis, slice(0, g)), _plane(axis, slice(-g, None))
         before = tile
+
         if count == 1:
-            # A short patch can be narrower than its halo. Repeated wrapping
-            # reads only owned samples, even when a slab would span ghosts.
+            # All of this axis' tiles live on one device, so periodicity is a
+            # self-copy. A short patch can be narrower than its halo; repeated
+            # wrapping reads only owned samples, even when a slab would span
+            # ghosts.
             owned = width + int(endpoint)
             nodes = g + (jnp.arange(tile.shape[axis]) - g) % owned
             tile = jnp.take(tile, nodes, axis=axis)
         else:
-            positive, negative = axis_permutations(count)
-            # Read BOTH sends before writing: source slabs can overlap for n<2g.
-            high_values = tile[high_owned]
+            # One-hop owner-to-ghost slab transport. The neighbor permutations
+            # are copied from PyPIC3D.
+            last = jax.lax.axis_index(axis_name) == count - 1
+            positive = tuple((i, (i + 1) % count) for i in range(count))
+            negative = tuple((i, (i - 1) % count) for i in range(count))
+
+            # Read BOTH sends before writing: source slabs can overlap for n < 2g.
+            high_values = tile[_plane(axis, slice(-2 * g, -g))]
             if endpoint:
                 final_values = tile[_plane(axis, slice(width + 1, width + g + 1))]
                 high_values = jnp.where(last, final_values, high_values)
             lower_values = jax.lax.ppermute(high_values, axis_name, positive)
-            upper_values = jax.lax.ppermute(tile[low_owned], axis_name, negative)
-            tile = tile.at[lower].set(lower_values)
+            upper_values = jax.lax.ppermute(tile[_plane(axis, slice(g, 2 * g))],
+                                            axis_name, negative)
             if endpoint:
-                # The final C endpoint occupies the first nominal upper-ghost slot.
-                shifted = jnp.concatenate((before[_plane(axis, slice(g + width, g + width + 1))],
+                # The final C endpoint occupies the first nominal upper-ghost
+                # slot. ``tile`` is still the pre-exchange snapshot here, and
+                # the lower write below never reaches that slot, so shifting
+                # the received slab past it keeps the endpoint intact.
+                shifted = jnp.concatenate((tile[_plane(axis, slice(g + width, g + width + 1))],
                                            upper_values[_plane(axis, slice(0, g - 1))]), axis=axis)
                 upper_values = jnp.where(last, shifted, upper_values)
-            tile = tile.at[upper].set(upper_values)
+            tile = tile.at[lower].set(lower_values).at[upper].set(upper_values)
 
-        # Face codes remain dynamic JAX values. Wrapped sends are discarded
-        # only on physical faces, so mixed left/right boundary codes work too.
+        # Close each physical face, discarding the wrapped send. The code is
+        # static, so a periodic face emits no conditional at all, and the test
+        # is per side, so mixed left/right boundary codes work too.
         for side in (0, 1):
-            on_face = index == (0 if side == 0 else count - 1)
-            physical = boundary_codes[2 * axis + side] != 0
-            boundary = g if side == 0 else g + width - 1 + int(endpoint)
+            if not boundary_codes[2 * axis + side]:
+                continue
+            on_face = jax.lax.axis_index(axis_name) == (0 if side == 0 else count - 1)
             target = lower if side == 0 else upper
+            boundary = g if side == 0 else g + width - 1 + int(endpoint)
             nodes = jnp.arange(g) if side == 0 else jnp.arange(g + width, width + 2 * g)
             shape = [1, 1, 1]
             shape[axis] = g
@@ -125,51 +102,46 @@ def _sweep_tile(tile, boundary_codes, mesh_shape, tile_shape, g,
                         values = base + (nodes - boundary).reshape(shape) * slope
                 return a.at[target].set(values)
 
-            tile = jax.lax.cond(on_face & physical, fill, lambda a: a, tile)
+            tile = jax.lax.cond(on_face, fill, lambda a: a, tile)
     return tile
 
 
-def make_tiled_halo_op(mesh, tile_shape, boundary_conditions, num_guard_cells=4,
-                       *, upper_endpoints=(False, False, False), exterior="linear"):
+@lru_cache(maxsize=128)
+def make_tiled_halo_op(layout, boundary_conditions, *, exterior="linear"):
     """Make a scalar/vector/tensor refresher with PyPIC3D's tile layout.
 
-    ``boundary_conditions`` contains six BSSN face codes (three paired codes
-    are also accepted). ``exterior`` is linear, constant, or preserve. Leading
-    component axes are flattened only for batched communication.
+    ``boundary_conditions`` is the six BSSN face codes as hashable ints, and
+    ``exterior`` is linear, constant, or preserve. Every argument is static,
+    so the compiled sweep is built once and a repeated layout reuses it rather
+    than re-tracing. Leading component axes are flattened only for batched
+    communication, which lets one refresher serve scalars, vectors and tensors.
     """
-    tile_shape = tuple(tile_shape)
-    upper_endpoints = tuple(upper_endpoints)
-    g = int(num_guard_cells)
-    validate_layout(mesh, tile_shape, g, upper_endpoints)
+    layout.validate()
     if exterior not in ("linear", "constant", "preserve"):
         raise ValueError("Unknown physical exterior rule")
-    if len(boundary_conditions) == 3:
-        boundary_conditions = tuple(bc for bc in boundary_conditions for _ in range(2))
-    mesh_shape = tuple(mesh.devices.shape)
+    counts, tile_shape, g, upper_endpoints = layout.geometry
+    allocated = layout.allocated_shape
 
-    def run(values):
-        if values.shape[-6:-3] != mesh_shape or values.shape[-3:] != tuple(n + 2*g for n in tile_shape):
+    def local_op(local):
+        result = jax.vmap(lambda tile: _sweep_tile(
+            tile, boundary_conditions, counts, tile_shape, g, upper_endpoints, exterior
+        ))(local[:, 0, 0, 0])
+        return result[:, None, None, None]
+
+    sweep = jax.jit(jax.shard_map(local_op, mesh=layout.mesh, in_specs=VECTOR_TILE_SPEC,
+                                  out_specs=VECTOR_TILE_SPEC, check_vma=False))
+
+    def refresh(values):
+        if values.shape[-6:-3] != counts or values.shape[-3:] != allocated:
             raise ValueError("Field shape does not match the mesh, tile dimensions, and guard depth")
         leading = values.shape[:-6]
         stacked = values.reshape((math.prod(leading),) + values.shape[-6:])
+        return sweep(stacked).reshape(leading + values.shape[-6:])
 
-        def local_op(local):
-            result = jax.vmap(lambda tile: _sweep_tile(
-                tile, boundary_conditions, mesh_shape, tile_shape, g, upper_endpoints, exterior
-            ))(local[:, 0, 0, 0])
-            return result[:, None, None, None]
-
-        result = jax.shard_map(local_op, mesh=mesh, in_specs=VECTOR_TILE_SPEC,
-                               out_specs=VECTOR_TILE_SPEC, check_vma=False)(stacked)
-        return result.reshape(leading + values.shape[-6:])
-
-    return run
+    return refresh
 
 
-def refresh_tiled_field(values, params, *, mesh, tile_shape, guard_cells=4,
-                        upper_endpoints=(False, False, False), exterior="linear"):
+def refresh_tiled_field(values, params, layout, *, exterior="linear"):
     """Refresh one collocated scalar or tensor using BSSN face codes."""
-    bcs = tuple(getattr(params, name) for name in
-                ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc"))
-    return make_tiled_halo_op(mesh, tile_shape, bcs, guard_cells,
-                              upper_endpoints=upper_endpoints, exterior=exterior)(values)
+    bcs = tuple(int(getattr(params, name)) for name in FACE_NAMES)
+    return make_tiled_halo_op(layout, bcs, exterior=exterior)(values)

@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from JAX_BSSN.bssn.variables import BSSNParameters
-from JAX_BSSN.parallel import make_field_mesh, initialize_tiled_bssn, tiled_rk4_step
+from JAX_BSSN.parallel import make_field_mesh, initialize_tiled_bssn, tiled_rk4_step, TileLayout
 from tests.initial_data import periodic_gauge_wave_state, gauge_wave_analytic_state, linear_wave_data
 from tests.test_parallel import gather_small_field
 
@@ -18,12 +18,12 @@ class TestTiledGaugeWaveConvergence(unittest.TestCase):
         zero = jnp.zeros_like(x)
         state = periodic_gauge_wave_state(x, zero, zero, 1/n)
         params = BSSNParameters(dx=1/n, dt=dt, eta=0., g=0., nu=0., zero_shift=1)
-        layout = dict(mesh=make_field_mesh((2, 1, 1)), tile_shape=(n//2, 1, 1))
-        tiled = initialize_tiled_bssn(state, params, **layout)
-        advance = jax.jit(lambda q: tiled_rk4_step(q, params, **layout))
+        layout = TileLayout(make_field_mesh((2, 1, 1)), (n//2, 1, 1))
+        tiled = initialize_tiled_bssn(state, params, layout)
+        advance = jax.jit(lambda q: tiled_rk4_step(q, params, layout))
         for _ in range(steps):
             tiled = advance(tiled)
-        result = gather_small_field(tiled.conformal_metric, layout["tile_shape"])
+        result = gather_small_field(tiled.conformal_metric, layout.tile_shape)
         exact = gauge_wave_analytic_state(x, zero, zero, dt*steps)
         return result, exact.conformal_metric
 
@@ -54,13 +54,13 @@ class TestTiledGaugeWaveConvergence(unittest.TestCase):
             state = linear_wave_data(n, 1, 1, dx, amplitude=amplitude)
             params = BSSNParameters(dx=dx, dt=dt, eta=0., kappa=0., nu=0., g=0.,
                                      zero_shift=1, gauge=0, x_min=origin)
-            layout = dict(mesh=make_field_mesh((2, 1, 1)), tile_shape=(n//2, 1, 1))
-            tiled = initialize_tiled_bssn(state, params, **layout)
-            advance = jax.jit(lambda q: tiled_rk4_step(q, params, **layout))
+            layout = TileLayout(make_field_mesh((2, 1, 1)), (n//2, 1, 1))
+            tiled = initialize_tiled_bssn(state, params, layout)
+            advance = jax.jit(lambda q: tiled_rk4_step(q, params, layout))
             for _ in range(round(final_time/dt)):
                 tiled = advance(tiled)
-            conformal = gather_small_field(tiled.conformal_metric, layout["tile_shape"])
-            W = gather_small_field(tiled.conformal_factor, layout["tile_shape"])
+            conformal = gather_small_field(tiled.conformal_metric, layout.tile_shape)
+            W = gather_small_field(tiled.conformal_factor, layout.tile_shape)
             h_plus = .5*(conformal[1, 1]-conformal[2, 2])/W**2
             x = (origin+jnp.arange(n)*dx)[:, None, None]
             exact = amplitude*jnp.sin(2*jnp.pi*(x-final_time))

@@ -97,46 +97,6 @@ def _active_field_shape(field, field_name, level_name):
     return shapes[0]
 
 
-def _validate_field_maps(root_fields, fine_fields):
-    if not root_fields or not fine_fields:
-        raise ValueError("root and fine patches must both contain fields")
-
-    root_names = set(root_fields)
-    fine_names = set(fine_fields)
-    if root_names != fine_names:
-        missing = sorted(root_names - fine_names)
-        extra = sorted(fine_names - root_names)
-        raise ValueError(
-            "root and fine patches have incompatible field sets; "
-            f"missing={missing}, extra={extra}"
-        )
-
-    patch_shapes = []
-    for level_name, fields in (("root patch", root_fields),
-                               ("fine patch", fine_fields)):
-        active_shape = None
-        for field_name, field in fields.items():
-            shape = _active_field_shape(field, field_name, level_name)
-            if active_shape is None:
-                active_shape = shape
-            elif shape != active_shape:
-                raise ValueError(
-                    f"fields on {level_name} do not share one active mesh shape"
-                )
-        patch_shapes.append(active_shape)
-
-    for name in root_names:
-        root_kind = _field_kind(root_fields[name])
-        fine_kind = _field_kind(fine_fields[name])
-        if root_kind != fine_kind:
-            raise ValueError(
-                f"field {name!r} changes from {root_kind} on the root patch "
-                f"to {fine_kind} on the fine patch"
-            )
-
-    return tuple(patch_shapes)
-
-
 def _configure_mesh(mesh, grid_spacing, grid_global_offset):
     mesh.geometry = io.Geometry.cartesian
     mesh.data_order = io.Data_Order.C if hasattr(io, "Data_Order") else "C"
@@ -299,15 +259,11 @@ def tiled_output_fields(field_map, layout):
     """
     if jax.process_count() != 1:
         raise ValueError("tiled FMR output currently supports one process")
-    counts = tuple(layout["mesh"].devices.shape)
-    widths = tuple(layout["tile_shape"])
-    endpoints = tuple(layout.get("upper_endpoints", (False,) * 3))
-    g = layout.get("guard_cells", 4)
-    shape = tuple(count * width + int(endpoint)
-                  for count, width, endpoint in zip(counts, widths, endpoints))
+    counts, widths, g, endpoints = layout.geometry
+    shape = layout.active_shape
 
     def owned_array(value):
-        if value.shape != counts + tuple(width + 2*g for width in widths):
+        if value.shape != counts + layout.allocated_shape:
             raise ValueError("output field does not match its tile layout")
         result = np.empty(shape, dtype=value.dtype)
         for shard in value.addressable_shards:
@@ -698,7 +654,7 @@ class FMRPatchSeriesWriter:
                 raise ValueError("tiled FMR output currently supports one process")
             if len(layouts) != level_count:
                 raise ValueError("one tile layout is required per patch")
-            if any(ghost != (layout.get("guard_cells", 4),) * 3
+            if any(ghost != (layout.guard_cells,) * 3
                    for ghost, layout in zip(ghosts, layouts)):
                 raise ValueError("ghost width does not match the tile layout")
             active_fields = tuple(tiled_output_fields(fields, layout)

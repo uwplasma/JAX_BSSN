@@ -26,8 +26,8 @@ Package map
    patches.
 
 ``JAX_BSSN.diagnostics``
-   Constraint reductions and reporting, plotting, NumPy snapshots, and
-   synchronous openPMD output. Evolution equations never import this package.
+   Constraint reductions and synchronous openPMD output. Evolution
+   equations never import this package.
 
 ``demos``
    Physics demonstrations and their initial data including waves and single 

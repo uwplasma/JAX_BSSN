@@ -20,12 +20,8 @@ jax.config.update("jax_enable_x64", True)
 
 def untile_field(field, layout, ghosts=0):
     """Read each global vertex from its owner, including requested exterior guards."""
-    counts = layout["mesh"].devices.shape
-    width = layout["tile_shape"]
-    endpoints = layout.get("upper_endpoints", (False,) * 3)
-    guard = layout.get("guard_cells", 4)
-    shape = tuple(n * count + int(endpoint)
-                  for n, count, endpoint in zip(width, counts, endpoints))
+    counts, width, guard, endpoints = layout.geometry
+    shape = layout.active_shape
     indices = []
     local_indices = []
     for axis in range(3):
@@ -239,7 +235,7 @@ class TestTiledFMR(unittest.TestCase):
         # Check every allocated face, edge, and corner, including the extra
         # lower guard in endpoint layouts and the halos between child tiles.
         layout = layouts[1]
-        widths, guard = layout["tile_shape"], layout["guard_cells"]
+        widths, guard = layout.tile_shape, layout.guard_cells
         active_shape = reference.fine_active_shape(spec)
         for tile in itertools.product(*(range(count) for count in topology)):
             indices = [jnp.arange(width + 2*guard) + owner*width - guard

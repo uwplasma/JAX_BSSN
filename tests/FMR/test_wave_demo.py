@@ -160,10 +160,10 @@ class TestLinearWaveRun(unittest.TestCase):
             _, result = self.run_demo(directory, grid_size=12, level_count=2,
                                       mesh=make_field_mesh((2, 1, 1)))
         root, child = result["layouts"]
-        self.assertEqual(root["tile_shape"], (6, 12, 12))
-        self.assertEqual(root["upper_endpoints"], (False,) * 3)
-        self.assertEqual(child["tile_shape"], (5, 11, 11))
-        self.assertEqual(child["upper_endpoints"], (True, False, False))
+        self.assertEqual(root.tile_shape, (6, 12, 12))
+        self.assertEqual(root.upper_endpoints, (False,) * 3)
+        self.assertEqual(child.tile_shape, (5, 11, 11))
+        self.assertEqual(child.upper_endpoints, (True, False, False))
         for state in result["parameters"]:
             self.assertEqual(state.dt, result["parameters"][0].dt)
         # The driver's five-percent gate already ran; confirm it stayed tiny.

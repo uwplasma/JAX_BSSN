@@ -22,7 +22,6 @@ from JAX_BSSN.fmr import (
     initialize_tiled_fmr, fmr_rk4_step,
 )
 from JAX_BSSN.parallel import make_field_mesh, map_tiled
-from JAX_BSSN.fmr.transfer import active_shape
 from JAX_BSSN.diagnostics.waves import composite_wave_diagnostics, diagnostic_fields
 from demos.gravitational_waves.linear_wave import linear_wave_initial_data
 
@@ -80,7 +79,7 @@ def run_branching_wave(output_path=None, *, steps=STEPS, mesh=None, amplitude=AM
     ))
     base = OUTPUT_PATH if output_path is None else Path(output_path)
     writer = FMRPatchSeriesWriter(base, dt=params.dt)
-    active_shapes = tuple(active_shape(layout) for layout in layouts)
+    active_shapes = tuple(layout.active_shape for layout in layouts)
     coordinates = tuple(
         jnp.broadcast_to((p.x_min + jnp.arange(n[0])*p.dx)[:, None, None], n)
         for p, n in zip(parameters, active_shapes)
@@ -89,13 +88,13 @@ def run_branching_wave(output_path=None, *, steps=STEPS, mesh=None, amplitude=AM
     @jax.jit
     def output_fields(values):
         return tuple(map_tiled(
-            diagnostic_fields, state, p, output_template={
+            diagnostic_fields, state, p, layout, output_template={
                 "h_plus": state.lapse, "lapse": state.lapse,
                 "shift": tuple(state.shift[i] for i in range(3)),
                 "K": state.trace_K, "W": state.conformal_factor,
                 "hamiltonian_constraint": state.lapse,
                 "momentum_constraint": tuple(state.shift[i] for i in range(3)),
-            }, **layout,
+            },
         ) for state, p, layout in zip(values, parameters, layouts))
 
     parents, depths = hierarchy_parents(hierarchy), hierarchy_depths(hierarchy)
@@ -107,9 +106,9 @@ def run_branching_wave(output_path=None, *, steps=STEPS, mesh=None, amplitude=AM
             {"id": i, "parent": parents[i], "depth": depths[i],
              "ordinal": depths[:i].count(depths[i]),
              "origin": [p.x_min, p.y_min, p.z_min], "shape": active_shapes[i],
-             "dx": p.dx, "tile_shape": layout["tile_shape"],
-             "tile_counts": layout["mesh"].devices.shape,
-             "upper_endpoints": layout["upper_endpoints"]}
+             "dx": p.dx, "tile_shape": layout.tile_shape,
+             "tile_counts": layout.counts,
+             "upper_endpoints": layout.upper_endpoints}
             for i, (p, layout) in enumerate(zip(parameters, layouts))
         ],
         "history": [],

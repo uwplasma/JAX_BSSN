@@ -8,20 +8,15 @@ from jax.sharding import PartitionSpec as P
 
 from JAX_BSSN.bssn.variables import BSSNVariables
 from JAX_BSSN.bssn.constraints import compute_all_constraints
-from JAX_BSSN.evolution.time_evolve import compute_bssn_rhs, enforce_algebraic_constraints
+from JAX_BSSN.evolution.time_evolve import compute_bssn_rhs
 from JAX_BSSN.parallel import initialize_tiled_bssn, make_field_mesh
-from JAX_BSSN.parallel.communication import MESH_AXES, tile_spec, validate_layout
+from JAX_BSSN.parallel.layout import FACE_NAMES, MESH_AXES, TileLayout, tile_spec
 from JAX_BSSN.parallel.evolution import (
-    local_parameters, map_tiled, owned_mask, prepare_tiled_state, refresh_bssn_halos,
+    constraint_norms_from_totals, constraint_statistics, local_parameters, map_tiled,
+    owned_mask, prepare_tiled_state, project_owned, refresh_bssn_halos,
 )
 from .refinement import fine_active_shape, hierarchy_parents
-from .transfer import (
-    active_shape, fill_tiled_fine_ghosts, layout_geometry, prolongation_routes,
-    restrict_tiled_to_coarse,
-)
-
-
-FACE_NAMES = ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc")
+from .transfer import fill_tiled_fine_ghosts, prolongation_routes, restrict_tiled_to_coarse
 
 
 def patch_layout(shape, mesh):
@@ -36,10 +31,9 @@ def patch_layout(shape, mesh):
             endpoints.append(True)
         else:
             raise ValueError("FMR active shape does not fit the shared device mesh")
-    guards = 4 + int(any(endpoints))
-    validate_layout(mesh, tuple(widths), guards, tuple(endpoints))
-    return dict(mesh=mesh, tile_shape=tuple(widths), guard_cells=guards,
-                upper_endpoints=tuple(endpoints))
+    layout = TileLayout(mesh, tuple(widths), 4 + int(any(endpoints)), tuple(endpoints))
+    layout.validate()
+    return layout
 
 
 def evolution_parameters(parameters, hierarchy):
@@ -57,31 +51,30 @@ def evolution_parameters(parameters, hierarchy):
 def validate_hierarchy(states, parameters, hierarchy, layouts):
     parents = hierarchy_parents(hierarchy)
     if not parameters or not len(parameters) == len(layouts) == len(parents):
-        raise ValueError("FMR requires one state, parameter tuple, and layout per patch")
+        raise ValueError("FMR requires one parameter tuple and one layout per patch")
     if states is not None and len(states) != len(parents):
-        raise ValueError("FMR requires one state, parameter tuple, and layout per patch")
-    mesh = layouts[0]["mesh"]
+        raise ValueError("FMR requires one state per patch")
+    mesh = layouts[0].mesh
     dt = float(parameters[0].dt)
     if not math.isfinite(dt) or dt <= 0:
         raise ValueError("the shared FMR timestep must be finite and positive")
     root_codes = tuple(getattr(parameters[0], name) for name in FACE_NAMES)
     if any(code not in (0, 1) for code in root_codes):
         raise ValueError("FMR root boundaries support periodic and Sommerfeld codes")
-    root_shape = active_shape(layouts[0])
+    root_shape = layouts[0].active_shape
     for axis in range(3):
         if 1 in root_codes[2*axis:2*axis + 2]:
-            accessible = min(root_shape[axis], layouts[0]["tile_shape"][axis]
-                             + layouts[0].get("guard_cells", 4))
+            accessible = min(root_shape[axis],
+                             layouts[0].tile_shape[axis] + layouts[0].guard_cells)
             if accessible < 8:
                 raise ValueError("Sommerfeld/KO closures require eight accessible inward samples")
     for child, (params, layout) in enumerate(zip(parameters, layouts)):
-        if layout["mesh"] != mesh:
+        if layout.mesh != mesh:
             raise ValueError("FMR patches must share the same device mesh and ordering")
-        counts, widths, g, endpoints = layout_geometry(layout)
-        validate_layout(mesh, widths, g, endpoints)
-        if g < 4 + int(any(endpoints)):
+        layout.validate()
+        if layout.guard_cells < 4 + int(any(layout.upper_endpoints)):
             raise ValueError("FMR needs four exterior guards beyond every owned endpoint")
-        expected = counts + tuple(n + 2 * g for n in widths)
+        expected = layout.counts + layout.allocated_shape
         if states is not None and any(field.shape[-6:] != expected for field in states[child]):
             raise ValueError("FMR state shape does not match its tiled layout")
         if not math.isclose(float(params.dt), dt, rel_tol=1.e-5, abs_tol=1.e-8):
@@ -89,12 +82,12 @@ def validate_hierarchy(states, parameters, hierarchy, layouts):
         if child:
             parent = parents[child]
             spec = hierarchy.patches[child - 1]
-            if active_shape(layout) != fine_active_shape(spec):
+            if layout.active_shape != fine_active_shape(spec):
                 raise ValueError("FMR child active shape does not match its parent bounds")
             if not math.isclose(float(params.dx) * 2, float(parameters[parent].dx),
                                 rel_tol=1.e-5, abs_tol=1.e-8):
                 raise ValueError("successive FMR spacings must differ by exactly two")
-            parent_shape = active_shape(layouts[parent])
+            parent_shape = layouts[parent].active_shape
             if any(lo <= 0 or hi >= n - 1 for lo, hi, n in
                    zip(spec.coarse_lo, spec.coarse_hi, parent_shape)):
                 raise ValueError("every child patch must be strictly inside its parent")
@@ -105,7 +98,7 @@ def validate_hierarchy(states, parameters, hierarchy, layouts):
                 if not math.isclose(float(getattr(params, name)), float(origin),
                                     rel_tol=1.e-5, abs_tol=1.e-8):
                     raise ValueError("FMR child active origin is inconsistent with its parent")
-            prolongation_routes(layout_geometry(layouts[parent]), layout_geometry(layout), spec,
+            prolongation_routes(layouts[parent].geometry, layout.geometry, spec,
                                  parent == 0, tuple(getattr(parameters[parent], name) for name in FACE_NAMES))
 
 
@@ -143,23 +136,19 @@ def initialize_tiled_fmr(initial, root_params, root_shape, hierarchy, *, mesh=No
             raise ValueError("one initial-data input is required per FMR patch")
     else:
         inputs = (initial,) * len(parameters)
-    states = tuple(initialize_tiled_bssn(data, params, **layout)
+    states = tuple(initialize_tiled_bssn(data, params, layout)
                    for data, params, layout in zip(inputs, parameters, layouts))
     validate_hierarchy(states, parameters, hierarchy, layouts)
     states = prepare_fmr_states(states, parameters, hierarchy, layouts=layouts, project=False)
     return states, parameters, layouts
 
 
-def project_owned(state, params, layout):
-    def project(local, p):
-        projected = enforce_algebraic_constraints(local)
-        mask = owned_mask(local.conformal_factor.shape, p)
-        return jax.tree.map(lambda new, old: jnp.where(mask, new, old), projected, local)
-    return map_tiled(project, state, params, **layout)
-
-
 def prepare_fmr_states(states, parameters, hierarchy, *, layouts, project=True):
-    """Prepare owned geometry, then refill neighbors and parent-supplied ghosts."""
+    """Prepare owned geometry, then refill neighbors and parent-supplied ghosts.
+
+    ``parameters`` must already carry the hierarchy-wide MAD weight and child
+    face codes from :func:`evolution_parameters`.
+    """
     parents = hierarchy_parents(hierarchy)
     prepared = []
     for child, (state, params, layout) in enumerate(zip(states, parameters, layouts)):
@@ -173,17 +162,21 @@ def prepare_fmr_states(states, parameters, hierarchy, *, layouts, project=True):
                     parent_boundary_codes=tuple(getattr(parameters[parent], name) for name in FACE_NAMES),
                     parent_is_root=parent == 0)
         operation = prepare_tiled_state if project else refresh_bssn_halos
-        prepared.append(operation(state, params, ghost_fill=ghost_fill, **layout))
+        prepared.append(operation(state, params, layout, ghost_fill=ghost_fill))
     return tuple(prepared)
+
+
+def _stage(states, parameters, hierarchy, layouts):
+    """One matching set of stage states and RHS values; ``parameters`` normalized."""
+    states = prepare_fmr_states(states, parameters, hierarchy, layouts=layouts)
+    rhs = tuple(map_tiled(compute_bssn_rhs, state, params, layout)
+                for state, params, layout in zip(states, parameters, layouts))
+    return states, rhs
 
 
 def fmr_stage(states, parameters, hierarchy, *, layouts):
     """Matching stage states and RHS values, with no second halo exchange."""
-    parameters = evolution_parameters(parameters, hierarchy)
-    states = prepare_fmr_states(states, parameters, hierarchy, layouts=layouts)
-    rhs = tuple(map_tiled(compute_bssn_rhs, state, params, **layout)
-                for state, params, layout in zip(states, parameters, layouts))
-    return states, rhs
+    return _stage(states, evolution_parameters(parameters, hierarchy), hierarchy, layouts)
 
 
 def fmr_rk4_step(states, parameters, hierarchy, *, layouts):
@@ -192,13 +185,13 @@ def fmr_rk4_step(states, parameters, hierarchy, *, layouts):
     validate_hierarchy(states, parameters, hierarchy, layouts)
     parameters = evolution_parameters(parameters, hierarchy)
     dt = parameters[0].dt
-    s0, k1 = fmr_stage(states, parameters, hierarchy, layouts=layouts)
+    s0, k1 = _stage(states, parameters, hierarchy, layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k / 2, s0, k1)
-    _, k2 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k2 = _stage(stage, parameters, hierarchy, layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k / 2, s0, k2)
-    _, k3 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k3 = _stage(stage, parameters, hierarchy, layouts)
     stage = jax.tree.map(lambda q, k: q + dt * k, s0, k3)
-    _, k4 = fmr_stage(stage, parameters, hierarchy, layouts=layouts)
+    _, k4 = _stage(stage, parameters, hierarchy, layouts)
     result = jax.tree.map(lambda q, a, b, c, d: q + dt * (a + 2*b + 2*c + d) / 6,
                           s0, k1, k2, k3, k4)
     result = [project_owned(state, params, layout)
@@ -216,6 +209,21 @@ def fmr_rk4_step(states, parameters, hierarchy, *, layouts):
     return prepare_fmr_states(tuple(result), parameters, hierarchy, layouts=layouts, project=False)
 
 
+def _uncovered_mask(local_shape, p, layout, children):
+    """Owned samples of this tile that no child patch of it also owns."""
+    mask = owned_mask(local_shape, p)
+    coordinates = tuple(jax.lax.axis_index(axis) * width + jnp.arange(n) - p.guard_cells
+                        for axis, width, n in zip(MESH_AXES, layout.tile_shape, mask.shape))
+    for spec in children:
+        covered = jnp.ones(mask.shape, dtype=bool)
+        for d, (indices, lo, hi) in enumerate(zip(coordinates, spec.coarse_lo, spec.coarse_hi)):
+            shape = [1, 1, 1]
+            shape[d] = indices.size
+            covered &= ((indices >= lo) & (indices <= hi)).reshape(shape)
+        mask &= ~covered
+    return mask
+
+
 def fmr_constraint_norms(states, parameters, hierarchy, *, layouts):
     """Composite point-count norms, excluding every child-covered parent point."""
     parameters = evolution_parameters(parameters, hierarchy)
@@ -223,38 +231,16 @@ def fmr_constraint_norms(states, parameters, hierarchy, *, layouts):
     parents = hierarchy_parents(hierarchy)
     totals = []
     for patch, (state, params, layout) in enumerate(zip(states, parameters, layouts)):
-        mesh = layout["mesh"]
         children = tuple(spec for child, spec in enumerate(hierarchy.patches, start=1)
                          if parents[child] == patch)
-        def local_norms(local):
+
+        def local_norms(local, params=params, layout=layout, children=children):
             local = jax.tree.map(lambda a: a.reshape(a.shape[:-6] + a.shape[-3:]), local)
-            p = local_parameters(params, mesh, layout["tile_shape"], layout["guard_cells"],
-                                 layout["upper_endpoints"])
-            mask = owned_mask(local.conformal_factor.shape, p)
-            coordinates = tuple(jax.lax.axis_index(axis) * width + jnp.arange(n) - p.guard_cells
-                                for axis, width, n in zip(MESH_AXES, layout["tile_shape"], mask.shape))
-            for spec in children:
-                covered = jnp.ones(mask.shape, dtype=bool)
-                for d, (indices, lo, hi) in enumerate(zip(coordinates, spec.coarse_lo, spec.coarse_hi)):
-                    shape = [1, 1, 1]
-                    shape[d] = indices.size
-                    covered &= ((indices >= lo) & (indices <= hi)).reshape(shape)
-                mask &= ~covered
-            violations = compute_all_constraints(local, p)
-            statistics = []
-            for value in violations:
-                count = jnp.sum(mask) * math.prod(value.shape[:-3])
-                square = jnp.sum(jnp.where(mask, value**2, 0.))
-                maximum = jnp.max(jnp.where(mask, jnp.abs(value), 0.))
-                statistics.append((jax.lax.psum(count, MESH_AXES), jax.lax.psum(square, MESH_AXES),
-                                   jax.lax.pmax(maximum, MESH_AXES)))
-            return tuple(statistics)
-        totals.append(jax.shard_map(local_norms, mesh=mesh, in_specs=(jax.tree.map(tile_spec, state),),
+            p = local_parameters(params, layout)
+            mask = _uncovered_mask(local.conformal_factor.shape, p, layout, children)
+            return constraint_statistics(compute_all_constraints(local, p), mask)
+
+        totals.append(jax.shard_map(local_norms, mesh=layout.mesh,
+                                    in_specs=(jax.tree.map(tile_spec, state),),
                                     out_specs=P(), check_vma=False)(state))
-    norms = {}
-    for component, name in enumerate(("hamiltonian", "momentum", "det_gamma", "trace_A", "gamma")):
-        count = sum(patch[component][0] for patch in totals)
-        square = sum(patch[component][1] for patch in totals)
-        norms[name + "_l2"] = jnp.sqrt(square / count)
-        norms[name + "_linf"] = jnp.max(jnp.stack([patch[component][2] for patch in totals]))
-    return norms
+    return constraint_norms_from_totals(totals)
