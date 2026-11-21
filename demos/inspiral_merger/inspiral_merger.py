@@ -32,13 +32,13 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
-from jax.sharding import PartitionSpec as P
+from jax.sharding import AxisType, Mesh, PartitionSpec as P
 from tqdm import tqdm
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.evolution.boundaries import SOMMERFELD_BC
 from JAX_BSSN.parallel import (MESH_AXES, TileLayout, initialize_tiled_bssn, local_parameters,
-                               make_field_mesh, owned_mask, tile_spec, tiled_constraint_norms,
+                               owned_mask, tile_spec, tiled_constraint_norms,
                                tiled_rk4_step)
 from JAX_BSSN.utilities.bowen_york_solver import (
     bowen_york_extrinsic_curvature,
@@ -81,7 +81,10 @@ def tile_layout(num_points):
     tiles = min(shapes, key=lambda t: sum(num_points**2 / (t[i] * t[(i + 1) % 3]) for i in range(3)))
     if ROOT:
         print(f"JAX devices: {count} on {jax.process_count()} process(es); tiles {tiles}")
-    return TileLayout(make_field_mesh(tiles), tuple(num_points // t for t in tiles), GUARD_CELLS)
+    # jax.make_mesh rejects meshes spanning several GPU nodes, so build the Mesh directly;
+    # devices are ordered by process, so node boundaries fall between whole x-slabs
+    mesh = Mesh(np.asarray(jax.devices()).reshape(tiles), MESH_AXES, axis_types=(AxisType.Auto,) * 3)
+    return TileLayout(mesh, tuple(num_points // t for t in tiles), GUARD_CELLS)
 
 
 def gather(field, layout):
