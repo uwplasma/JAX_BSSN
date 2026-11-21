@@ -23,7 +23,7 @@ import numpy as np
 import inspiral_merger as binary
 
 
-GRID_SIZES = [75, 150, 300]             # grid points per dimension, each twice the previous
+GRID_SIZES = [128, 256, 512]           # grid points per dimension, each twice the previous (divisible by the tiles)
 FIELDS = {"conformal_factor": r"$W$", "lapse": r"$\alpha$"}
 OUTPUT_DIR = Path("output") / "convergence"
 

@@ -12,8 +12,9 @@ nodes launch one process per GPU (e.g. srun -n 8 --gpus-per-task=1); distributed
 initialised automatically when SLURM starts more than one task.
 
 Writes output/constraint_l2.txt (time, Hamiltonian L2, momentum L2) every step,
-output/newton_residual.txt, and, every SNAPSHOT_INTERVAL steps, one NumPy file per BSSN
-field (used by make_inspiral_movies.py and gw_strain_probe.py). run_inspiral_merger is
+output/newton_residual.txt, output/gw_probe_samples.npz (strain h+, hx sampled every
+PROBE_INTERVAL at points on the z and x axes, plotted by gw_strain_probe.py) and, every SNAPSHOT_INTERVAL steps, one NumPy file per BSSN
+field (used by make_inspiral_movies.py). run_inspiral_merger is
 also imported by inspiral_merger_convergence.py.
 """
 
@@ -32,7 +33,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
-from jax.sharding import AxisType, Mesh, PartitionSpec as P
+from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec as P
 from tqdm import tqdm
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
@@ -55,7 +56,9 @@ HALF_WIDTH = 12.0            # domain is [-HALF_WIDTH, HALF_WIDTH]^3
 NUM_POINTS = 300             # grid points per dimension (each tile count must divide it)
 CFL = 0.15                   # dt / dx
 FINAL_TIME = 100.0           # evolution time
-SNAPSHOT_INTERVAL = 60       # steps between saved snapshots
+SNAPSHOT_INTERVAL = 60       # steps between saved full snapshots (large: 27 fields per grid point)
+PROBE_FRACTIONS = [0.20, 0.30, 0.40]  # strain probe radii as fractions of the grid width (< 0.5)
+PROBE_INTERVAL = 0.5         # time between in-run strain samples at the probes
 NEWTON_TOLERANCE = 1.0e-14   # initial-data Newton tolerance
 CG_TOLERANCE = 1.0e-14       # initial-data conjugate-gradient tolerance
 GUARD_CELLS = 4              # tile guard depth required by the BSSN stencils
@@ -162,6 +165,48 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
     state = initialize_tiled_bssn(initial, params, layout)  # each device receives only its own tile
     del initial
     advance = jax.jit(lambda s: tiled_rk4_step(s, params, layout), donate_argnums=0)
+    centre, g = num_points // 2, layout.guard_cells
+    probes = [(axis, int(f * num_points)) for f in PROBE_FRACTIONS for axis in ("z", "x")]
+    points = [(centre, centre, centre + r) if axis == "z" else (centre + r, centre, centre) for axis, r in probes]
+    # global grid index -> (tile x, tile y, tile z, padded local x, y, z)
+    points = [tuple(i // w for i, w in zip(p, layout.tile_shape)) + tuple(g + i % w for i, w in zip(p, layout.tile_shape))
+              for p in points]
+    sample_every = max(1, round(PROBE_INTERVAL / params.dt))
+
+    def strain(state):
+        """
+        Leading-order TT strain from the physical metric gamma_ij = W^-2 gamma_tilde_ij at each probe.
+
+        Args:
+            state: Tiled BSSNVariables
+
+        Returns:
+            Array (probes, 2) of h+ and hx; z-axis: ((g_xx - g_yy)/2, g_xy), x-axis: ((g_yy - g_zz)/2, g_yz)
+        """
+        values = []
+        for (axis, _), point in zip(probes, points):
+            g_ij = state.conformal_metric[(slice(None), slice(None)) + point] / state.conformal_factor[point]**2
+            a, b = (0, 1) if axis == "z" else (1, 2)  # the two directions transverse to the axis
+            values.append(jnp.stack([(g_ij[a, a] - g_ij[b, b]) / 2, g_ij[a, b]]))
+        return jnp.stack(values)
+
+    sample = jax.jit(strain, out_shardings=NamedSharding(layout.mesh, P()))  # replicated on every process
+    samples = [(0.0, np.asarray(sample(state)))]
+
+    def save_samples():
+        """
+        Write the strain samples so far to gw_probe_samples.npz (process 0 only).
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
+        if ROOT:
+            np.savez(output_dir / "gw_probe_samples.npz", t=np.array([t for t, _ in samples]),
+                     strain=np.array([h for _, h in samples]), labels=np.array([f"{a}-axis r={r}" for a, r in probes]),
+                     radius=np.array([r * dx for _, r in probes]), axis=np.array([a for a, _ in probes]))
 
     def monitors(local):
         """
@@ -226,6 +271,11 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
                              min_lapse=f"{min_alpha:.3f}", max_shift=f"{max_beta:.3f}")
         if snapshot_interval and (step % snapshot_interval == 0 or step == num_steps):
             save(step)
+        if step % sample_every == 0:
+            samples.append((step * params.dt, np.asarray(sample(state))))
+            if len(samples) % 100 == 0:
+                save_samples()  # keep partial results if the job hits its time limit
+    save_samples()
     history = np.array(history)
     if ROOT:
         np.savetxt(output_dir / "constraint_l2.txt", history, header="time hamiltonian_l2 momentum_l2")
