@@ -14,7 +14,7 @@
 #SBATCH -o %x-%j.out
 
 module load python
-srun --gpus-per-task=1 --gpu-bind=none python - <<'PY'
+srun --gpus-per-task=1 --gpu-bind=none python -c "$(cat <<'PY'
 import runpy
 
 import inspiral_merger as binary
@@ -23,3 +23,4 @@ binary.FINAL_TIME = 20.0       # before the merger, where self-convergence is we
 binary.INFALL_MOMENTUM = 0.0   # same quasi-circular orbit as the GW run
 runpy.run_path("inspiral_merger_convergence.py", run_name="__main__")  # uses GRID_SIZES = [128, 256, 512]
 PY
+)"

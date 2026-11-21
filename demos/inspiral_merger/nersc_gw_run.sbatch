@@ -14,7 +14,7 @@
 #SBATCH -o %x-%j.out
 
 module load python
-srun --gpus-per-task=1 --gpu-bind=none python - <<'PY'
+srun --gpus-per-task=1 --gpu-bind=none python -c "$(cat <<'PY'
 import inspiral_merger as binary
 
 binary.HALF_WIDTH = 32.0       # probes in the wave zone, boundary reflections arrive after the ringdown
@@ -25,4 +25,5 @@ state, dx, history = binary.run_inspiral_merger(512, "output_gw", 2000)  # 512^3
 if binary.ROOT:
     print(f"Final Hamiltonian L2 = {history[-1, 1]:.4e}, momentum L2 = {history[-1, 2]:.4e}")
 PY
+)"
 python -c "import gw_strain_probe; gw_strain_probe.plot_strain('output_gw')"
