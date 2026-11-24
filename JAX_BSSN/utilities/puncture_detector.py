@@ -9,20 +9,18 @@ from JAX_BSSN.bssn.variables import get_boundary_codes
 from JAX_BSSN.evolution.spatial_derivatives import diff1_physical
 
 
-@partial(jax.jit, static_argnames="max_punctures")
-def identify_punctures(state, lapse_threshold, evolution_parameters, *, max_punctures):
-    """Return minimum-lapse positions in positive-divergence low-lapse regions.
+@jax.jit
+def puncture_regions(state, lapse_threshold, evolution_parameters):
+    """Return face-connected labels, roots, minimum-lapse indices, and wrapping.
 
-    The state must use global unpadded Cartesian arrays. Regions connect through
-    shared faces, including opposite faces only when both are periodic. The
-    returned positions have shape (max_punctures, 3), with NaN padding. Count
-    includes all regions, so count > max_punctures reports truncation. Region
-    order and equal-lapse ties use the smallest flattened grid index.
-
-    These candidates do not establish the presence of an apparent horizon.
+    Inputs are global unpadded Cartesian BSSN arrays. Labels and the Boolean
+    root mask have the lapse shape. Each component's label is its smallest
+    flattened grid index; background has label ``state.lapse.size``.
+    ``representative[label]`` gives the minimum-lapse flattened index, breaking
+    ties by index. This array has size ``state.lapse.size + 1`` and uses the
+    grid size as the sentinel for background and unused labels. ``periodic``
+    contains three flags, each true only when both axis faces are periodic.
     """
-    if not isinstance(max_punctures, int) or max_punctures < 1:
-        raise ValueError("max_punctures must be a positive static integer")
     lapse, shift = state.lapse, state.shift
     if lapse.ndim != 3 or shift.shape != (3,) + lapse.shape:
         raise ValueError("Puncture detection requires global unpadded BSSN arrays, not tiled states")
@@ -78,6 +76,26 @@ def identify_punctures(state, lapse_threshold, evolution_parameters, *, max_punc
 
     # One root per region, carrying that region's label, ordered by grid index.
     roots = qualifying & (labels == grid_index)
+    return labels, roots, representative, tuple(periodic)
+
+
+@partial(jax.jit, static_argnames="max_punctures")
+def identify_punctures(state, lapse_threshold, evolution_parameters, *, max_punctures):
+    """Return minimum-lapse positions in positive-divergence low-lapse regions.
+
+    The state must use global unpadded Cartesian arrays. Regions connect through
+    shared faces, including opposite faces only when both are periodic. The
+    returned positions have shape (max_punctures, 3), with NaN padding. Count
+    includes all regions, so count > max_punctures reports truncation. Region
+    order and equal-lapse ties use the smallest flattened grid index.
+
+    These candidates do not establish the presence of an apparent horizon.
+    """
+    if not isinstance(max_punctures, int) or max_punctures < 1:
+        raise ValueError("max_punctures must be a positive static integer")
+    labels, roots, representative, _ = puncture_regions(
+        state, lapse_threshold, evolution_parameters)
+    size = labels.size
     count = jnp.sum(roots, dtype=jnp.int32)
     root_indices = jnp.nonzero(roots.ravel(), size=max_punctures, fill_value=size)[0]
     selected = representative[root_indices]
@@ -85,7 +103,7 @@ def identify_punctures(state, lapse_threshold, evolution_parameters, *, max_punc
 
     # Convert the retained representatives to physical coordinates, padding the
     # unused output rows with NaN.
-    indices = jnp.stack(jnp.unravel_index(jnp.where(valid, selected, 0), lapse.shape), axis=-1)
+    indices = jnp.stack(jnp.unravel_index(jnp.where(valid, selected, 0), labels.shape), axis=-1)
     origin = jnp.asarray((evolution_parameters.x_min, evolution_parameters.y_min,
                           evolution_parameters.z_min))
     positions = origin + evolution_parameters.dx * indices
