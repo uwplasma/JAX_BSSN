@@ -6,13 +6,13 @@ conjugate-gradient linear solves), then the moving-puncture gauge (1+log slicing
 pre-collapsed lapse alpha = W, Gamma-driver shift) is evolved with RK4 on a uniform grid
 with Sommerfeld outer faces.
 
-The initial data are solved once by prepare_initial_data in a single process whose grid is
-split over all of its GPUs, and saved to <output_dir>/initial_data/*.npy; a single-process
+The initial data are solved once by prepare_initial_data in a single process on the host
+CPU (the full-grid solve does not fit on one GPU at 512^3), and saved to <output_dir>/initial_data/*.npy; a single-process
 run prepares them automatically. The evolution splits the grid into one tile per device
 with JAX_BSSN.parallel, each device memory-mapping only its own tile of the saved data, and
 tiles exchange only their guard layers at each RK4 stage, so the run scales across GPUs
 and nodes. On several nodes first run prepare_initial_data as one task (srun -n 1
---gpus-per-task=4), then launch one process per GPU (srun --ntasks-per-node=4
+-c 128), then launch one process per GPU (srun --ntasks-per-node=4
 --gpus-per-task=1); distributed JAX is initialised automatically for multi-task steps.
 
 Writes output/constraint_l2.txt (time, Hamiltonian L2, momentum L2) every step,
@@ -121,8 +121,9 @@ def prepare_initial_data(num_points, output_dir=OUTPUT_DIR):
     """
     Solve equal-mass Bowen-York binary puncture data and save it for the tiled evolution.
 
-    The grid is split along x over every local GPU, so the solve needs roughly 1/n of the
-    memory per device. Run as a single process.
+    The solve runs on the host CPU: the Bowen-York solver keeps several full-grid tensors
+    (about 80 GB at 512^3), more than one GPU holds, while a GPU node has 256 GB of host
+    memory. Run as a single process with every core (e.g. srun -n 1 -c 128).
 
     Args:
         num_points: Grid points per dimension
@@ -133,11 +134,25 @@ def prepare_initial_data(num_points, output_dir=OUTPUT_DIR):
     """
     directory = Path(output_dir) / "initial_data"
     directory.mkdir(parents=True, exist_ok=True)
-    devices = jax.local_devices()
-    count = next(n for n in range(len(devices), 0, -1) if num_points % n == 0)
-    print(f"[{num_points}^3] solving Bowen-York initial data over {count} device(s) ...")
+    print(f"[{num_points}^3] solving Bowen-York initial data on the CPU ...", flush=True)
+    with jax.default_device(jax.devices("cpu")[0]):
+        _solve_and_save(num_points, directory)
+    print(f"Saved initial data in {directory}")
+    return directory
+
+
+def _solve_and_save(num_points, directory):
+    """
+    Solve the Hamiltonian constraint on the current default device and write the .npy files.
+
+    Args:
+        num_points: Grid points per dimension
+        directory: Destination directory
+
+    Returns:
+        None
+    """
     grid, dx = cell_centered_grid(num_points=num_points, half_width=HALF_WIDTH)
-    grid = jax.device_put(grid, NamedSharding(Mesh(np.asarray(devices[:count]), ("x",)), P("x")))
     positions = jnp.array([[-SEPARATION / 2, 0, 0], [SEPARATION / 2, 0, 0]], dtype=grid.dtype)
     momenta = jnp.array([[INFALL_MOMENTUM, TANGENTIAL_MOMENTUM, 0], [-INFALL_MOMENTUM, -TANGENTIAL_MOMENTUM, 0]],
                         dtype=grid.dtype)
@@ -155,8 +170,6 @@ def prepare_initial_data(num_points, output_dir=OUTPUT_DIR):
             A_tilde[i, j] = np.asarray(W**3 * A_hat[..., i, j])
     A_tilde.flush()
     np.savetxt(directory / "newton_residual.txt", np.asarray(residuals), header="interior Hamiltonian residual RMS")
-    print(f"Saved initial data in {directory}")
-    return directory
 
 
 def load_initial_data(directory):
