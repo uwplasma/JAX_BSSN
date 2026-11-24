@@ -92,7 +92,8 @@ def tile_layout(num_points):
 
 def gather(field, layout):
     """
-    Assemble the owned samples of a tiled field into one global host array.
+    Assemble the owned samples of a tiled field into one global host array, one tensor
+    component at a time so the all-gather never holds more than one scalar grid per device.
 
     Args:
         field: Tiled array (components..., tx, ty, tz, nx + 2g, ny + 2g, nz + 2g)
@@ -101,13 +102,15 @@ def gather(field, layout):
     Returns:
         NumPy array (components..., tx*nx, ty*ny, tz*nz)
     """
-    g = layout.guard_cells
-    owned = field[..., g:-g, g:-g, g:-g]
-    owned = np.asarray(multihost_utils.process_allgather(owned, tiled=True) if jax.process_count() > 1 else owned)
-    lead = owned.ndim - 6
-    order = tuple(range(lead)) + tuple(lead + i for i in (0, 3, 1, 4, 2, 5))
-    sizes = tuple(t * n for t, n in zip(owned.shape[lead:lead + 3], owned.shape[lead + 3:]))
-    return owned.transpose(order).reshape(owned.shape[:lead] + sizes)
+    g, lead = layout.guard_cells, field.ndim - 6
+    tiles, owned = field.shape[lead:lead + 3], tuple(n - 2 * g for n in field.shape[lead + 3:])
+    result = np.empty(field.shape[:lead] + tuple(t * n for t, n in zip(tiles, owned)), dtype=field.dtype)
+    for component in np.ndindex(field.shape[:lead]):
+        part = field[component][..., g:-g, g:-g, g:-g]
+        part = np.asarray(multihost_utils.process_allgather(part, tiled=True) if jax.process_count() > 1 else part)
+        result[component] = part.transpose(0, 3, 1, 4, 2, 5).reshape(result.shape[lead:])
+        del part
+    return result
 
 
 def binary_initial_data(num_points):
