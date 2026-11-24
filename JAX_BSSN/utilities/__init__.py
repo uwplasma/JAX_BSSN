@@ -19,11 +19,13 @@ from JAX_BSSN.utilities.bowen_york_solver import (
     solve_axisymmetric_conformal_factor,
     solve_conformal_factor,
 )
+from JAX_BSSN.utilities.puncture_detector import identify_punctures
 
 
 __all__ = [
     "build_geometry",
     "find_apparent_horizon",
+    "identify_punctures",
     "axisymmetric_cell_centered_grid",
     "axisymmetric_hamiltonian_residual",
     "axisymmetric_laplacian",
