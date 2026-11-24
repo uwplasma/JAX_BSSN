@@ -42,9 +42,10 @@ from tqdm import tqdm
 
 from JAX_BSSN.bssn.variables import BSSNParameters, BSSNVariables
 from JAX_BSSN.evolution.boundaries import SOMMERFELD_BC
+from JAX_BSSN.bssn.constraints import compute_all_constraints
 from JAX_BSSN.parallel import (MESH_AXES, TileLayout, initialize_tiled_bssn, local_parameters,
-                               owned_mask, tile_spec, tiled_constraint_norms,
-                               tiled_rk4_step)
+                               owned_mask, tile_spec, tiled_rk4_step)
+from JAX_BSSN.parallel.evolution import constraint_norms_from_totals, constraint_statistics, refresh_bssn_halos
 from JAX_BSSN.utilities.bowen_york_solver import (
     bowen_york_extrinsic_curvature,
     cell_centered_grid,
@@ -261,21 +262,44 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
                      strain=np.array([h for _, h in samples]), labels=np.array([f"{a}-axis r={r}" for a, r in probes]),
                      radius=np.array([r * dx for _, r in probes]), axis=np.array([a for a, _ in probes]))
 
+    slabs = max(1, layout.tile_shape[0] // 16)  # constraint temporaries scale with the slab, not the tile
+
     def monitors(local):
         """
-        Puncture-gauge monitors over owned samples, reduced across every tile.
+        Constraint statistics (computed in x-slabs to bound memory) and puncture-gauge monitors.
 
         Args:
-            local: One device's tiled BSSNVariables (tile axes of size one)
+            local: One device's tiled BSSNVariables with refreshed halos (tile axes of size one)
 
         Returns:
-            Tuple (min W, min lapse, max |shift|)
+            Tuple (constraint statistics for constraint_norms_from_totals, min W, min lapse, max |shift|)
         """
         local = jax.tree.map(lambda a: a.reshape(a.shape[:-6] + a.shape[-3:]), local)
-        mask = owned_mask(local.lapse.shape, local_parameters(params, layout))
+        p = local_parameters(params, layout)
+        width = layout.tile_shape[0] // slabs
+
+        def slab(s):
+            """
+            Constraint statistics of the owned points in x-slab s of this tile.
+
+            Args:
+                s: Slab index
+
+            Returns:
+                Tuple of (count, sum of squares, max) per constraint, reduced across tiles
+            """
+            piece = jax.tree.map(lambda a: jax.lax.dynamic_slice_in_dim(a, s * width, width + 2 * GUARD_CELLS, -3), local)
+            q = p._replace(x_min=p.x_min + s * width * params.dx, owned_shape=(width, *p.owned_shape[1:]),
+                           owned_faces=(p.owned_faces[0] & (s == 0), p.owned_faces[1] & (s == slabs - 1),
+                                        *p.owned_faces[2:]))
+            return constraint_statistics(compute_all_constraints(piece, q), owned_mask(piece.lapse.shape, q))
+
+        stats = jax.lax.map(slab, jnp.arange(slabs))
+        stats = tuple((c.sum(), q.sum(), m.max()) for c, q, m in stats)
+        mask = owned_mask(local.lapse.shape, p)
         low = lambda a: jax.lax.pmin(jnp.min(jnp.where(mask, a, jnp.inf)), MESH_AXES)
         shift = jnp.sqrt(jnp.sum(local.shift**2, axis=0))
-        return low(local.conformal_factor), low(local.lapse), jax.lax.pmax(jnp.max(jnp.where(mask, shift, 0.0)), MESH_AXES)
+        return stats, low(local.conformal_factor), low(local.lapse), jax.lax.pmax(jnp.max(jnp.where(mask, shift, 0.0)), MESH_AXES)
 
     @jax.jit
     def diagnostics(state):
@@ -288,9 +312,10 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
         Returns:
             Tuple (Hamiltonian L2, momentum L2, min W, min lapse, max |shift|)
         """
-        norms = tiled_constraint_norms(state, params, layout)
-        gauge = jax.shard_map(monitors, mesh=layout.mesh, in_specs=(jax.tree.map(tile_spec, state),),
-                              out_specs=P(), check_vma=False)(state)
+        state = refresh_bssn_halos(state, params, layout)
+        stats, *gauge = jax.shard_map(monitors, mesh=layout.mesh, in_specs=(jax.tree.map(tile_spec, state),),
+                                      out_specs=P(), check_vma=False)(state)
+        norms = constraint_norms_from_totals((stats,))
         return (norms["hamiltonian_l2"], norms["momentum_l2"], *gauge)
 
     def save(step):
