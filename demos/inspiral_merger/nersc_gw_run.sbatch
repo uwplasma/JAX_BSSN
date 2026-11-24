@@ -1,5 +1,6 @@
 #!/bin/bash
 # Perlmutter batch job: 512^3 inspiral merger on a +/-32 M box for the gravitational-wave probe.
+# Solves the initial data on one node's 4 GPUs, then evolves on all 16.
 # Overrides the demo's globals for this run (quasi-circular orbit, probes at 12.8, 19.2 and
 # 25.6 M, t = 150 M), writes everything to output_gw/, then plots the strain with
 # gw_strain_probe.py. Submit from demos/inspiral_merger with: sbatch nersc_gw_run.sbatch
@@ -14,16 +15,10 @@
 #SBATCH -o %x-%j.out
 
 module load python
-srun --gpus-per-task=1 --gpu-bind=none python -c "$(cat <<'PY'
-import inspiral_merger as binary
+# demo settings for this run: probes in the wave zone, quasi-circular orbit for the analytic (BOB)
+# comparison, inspiral + merger + several ringdown e-folding times, strain sampled every 0.5 M
+SETTINGS="import inspiral_merger as b; b.HALF_WIDTH = 32.0; b.FINAL_TIME = 150.0; b.INFALL_MOMENTUM = 0.0; b.PROBE_INTERVAL = 0.5"
 
-binary.HALF_WIDTH = 32.0       # probes in the wave zone, boundary reflections arrive after the ringdown
-binary.FINAL_TIME = 150.0      # inspiral, merger and several ringdown e-folding times
-binary.INFALL_MOMENTUM = 0.0   # quasi-circular orbit for the analytic (BOB) comparison
-binary.PROBE_INTERVAL = 0.5    # strain sample spacing in M
-state, dx, history = binary.run_inspiral_merger(512, "output_gw", 2000)  # 512^3, dx = M/8, rare full snapshots
-if binary.ROOT:
-    print(f"Final Hamiltonian L2 = {history[-1, 1]:.4e}, momentum L2 = {history[-1, 2]:.4e}")
-PY
-)"
+srun -N 1 -n 1 --ntasks-per-node=1 --gpus-per-task=4 --gpu-bind=none     python -c "$SETTINGS; b.prepare_initial_data(512, 'output_gw')"
+srun --gpus-per-task=1 --gpu-bind=none     python -c "$SETTINGS; s, dx, h = b.run_inspiral_merger(512, 'output_gw', 2000); b.ROOT and print(f'Final H L2 = {h[-1, 1]:.4e}, M L2 = {h[-1, 2]:.4e}')"
 python -c "import gw_strain_probe; gw_strain_probe.plot_strain('output_gw')"

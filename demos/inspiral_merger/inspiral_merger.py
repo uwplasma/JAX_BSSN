@@ -6,13 +6,17 @@ conjugate-gradient linear solves), then the moving-puncture gauge (1+log slicing
 pre-collapsed lapse alpha = W, Gamma-driver shift) is evolved with RK4 on a uniform grid
 with Sommerfeld outer faces.
 
-The grid is split into one tile per device with JAX_BSSN.parallel; tiles exchange only
-their guard layers at each RK4 stage, so the run scales across GPUs and nodes. On several
-nodes launch one process per GPU (e.g. srun -n 8 --gpus-per-task=1); distributed JAX is
-initialised automatically when SLURM starts more than one task.
+The initial data are solved once by prepare_initial_data in a single process whose grid is
+split over all of its GPUs, and saved to <output_dir>/initial_data/*.npy; a single-process
+run prepares them automatically. The evolution splits the grid into one tile per device
+with JAX_BSSN.parallel, each device memory-mapping only its own tile of the saved data, and
+tiles exchange only their guard layers at each RK4 stage, so the run scales across GPUs
+and nodes. On several nodes first run prepare_initial_data as one task (srun -n 1
+--gpus-per-task=4), then launch one process per GPU (srun --ntasks-per-node=4
+--gpus-per-task=1); distributed JAX is initialised automatically for multi-task steps.
 
 Writes output/constraint_l2.txt (time, Hamiltonian L2, momentum L2) every step,
-output/newton_residual.txt, output/gw_probe_samples.npz (strain h+, hx sampled every
+output/initial_data/ (initial data and newton_residual.txt), output/gw_probe_samples.npz (strain h+, hx sampled every
 PROBE_INTERVAL at points on the z and x axes, plotted by gw_strain_probe.py) and, every SNAPSHOT_INTERVAL steps, one NumPy file per BSSN
 field (used by make_inspiral_movies.py). run_inspiral_merger is
 also imported by inspiral_merger_convergence.py.
@@ -26,7 +30,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")  # limit allocat
 
 import jax
 
-if int(os.environ.get("SLURM_NTASKS", "1")) > 1:
+if int(os.environ.get("SLURM_STEP_NUM_TASKS", os.environ.get("SLURM_NTASKS", "1"))) > 1:
     jax.distributed.initialize()  # must run before any other JAX or JAX_BSSN call
 jax.config.update("jax_enable_x64", True)
 
@@ -113,39 +117,71 @@ def gather(field, layout):
     return result
 
 
-def binary_initial_data(num_points):
+def prepare_initial_data(num_points, output_dir=OUTPUT_DIR):
     """
-    Solve equal-mass Bowen-York binary puncture data on the global grid.
+    Solve equal-mass Bowen-York binary puncture data and save it for the tiled evolution.
+
+    The grid is split along x over every local GPU, so the solve needs roughly 1/n of the
+    memory per device. Run as a single process.
 
     Args:
         num_points: Grid points per dimension
+        output_dir: Run directory; files go to <output_dir>/initial_data
 
     Returns:
-        Tuple (dx, BSSNVariables of global host arrays, Newton residual history)
+        Path of the initial-data directory
     """
+    directory = Path(output_dir) / "initial_data"
+    directory.mkdir(parents=True, exist_ok=True)
+    devices = jax.local_devices()
+    count = next(n for n in range(len(devices), 0, -1) if num_points % n == 0)
+    print(f"[{num_points}^3] solving Bowen-York initial data over {count} device(s) ...")
     grid, dx = cell_centered_grid(num_points=num_points, half_width=HALF_WIDTH)
+    grid = jax.device_put(grid, NamedSharding(Mesh(np.asarray(devices[:count]), ("x",)), P("x")))
     positions = jnp.array([[-SEPARATION / 2, 0, 0], [SEPARATION / 2, 0, 0]], dtype=grid.dtype)
     momenta = jnp.array([[INFALL_MOMENTUM, TANGENTIAL_MOMENTUM, 0], [-INFALL_MOMENTUM, -TANGENTIAL_MOMENTUM, 0]],
                         dtype=grid.dtype)
     psi, _, residuals = solve_conformal_factor(
         jnp.array([MASS, MASS], dtype=grid.dtype), positions, momenta, grid, dx,
         newton_tolerance=NEWTON_TOLERANCE, max_newton_iterations=300,
-        cg_tolerance=CG_TOLERANCE, max_cg_iterations=5000, verbose=ROOT)
-    A_hat = jnp.moveaxis(bowen_york_extrinsic_curvature(momenta, positions, grid), (-2, -1), (0, 1))
-    W = np.asarray(psi**-2)
-    eye = np.broadcast_to(np.eye(3)[:, :, None, None, None], (3, 3) + W.shape)
-    vector = np.zeros((3,) + W.shape)
+        cg_tolerance=CG_TOLERANCE, max_cg_iterations=5000, verbose=True)
+    W = psi**-2
+    np.save(directory / "conformal_factor.npy", np.asarray(W))
     # conformally flat, maximal (K = 0) data with A_tilde_ij = psi^-6 A_hat_ij = W^3 A_hat_ij
-    return dx, BSSNVariables(eye, W, np.asarray(W**3 * A_hat), np.zeros_like(W), vector, W, vector), residuals
+    A_hat = bowen_york_extrinsic_curvature(momenta, positions, grid)
+    A_tilde = np.lib.format.open_memmap(directory / "traceless_K.npy", mode="w+", shape=(3, 3) + W.shape)
+    for i in range(3):
+        for j in range(3):
+            A_tilde[i, j] = np.asarray(W**3 * A_hat[..., i, j])
+    A_tilde.flush()
+    np.savetxt(directory / "newton_residual.txt", np.asarray(residuals), header="interior Hamiltonian residual RMS")
+    print(f"Saved initial data in {directory}")
+    return directory
+
+
+def load_initial_data(directory):
+    """
+    Describe the saved initial data for initialize_tiled_bssn, which memory-maps each tile.
+
+    Args:
+        directory: Directory written by prepare_initial_data
+
+    Returns:
+        Mapping from BSSN field name to a .npy path, a callback or False (zero)
+    """
+    identity = lambda coordinates, p: jnp.broadcast_to(jnp.eye(3)[:, :, None, None, None], (3, 3) + tuple(p.owned_shape))
+    W = str(directory / "conformal_factor.npy")
+    return {"conformal_metric": identity, "conformal_factor": W, "traceless_K": str(directory / "traceless_K.npy"),
+            "trace_K": False, "conformal_connection": False, "lapse": W, "shift": False}
 
 
 def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_interval=SNAPSHOT_INTERVAL):
     """
-    Solve the initial data and evolve the binary on tiles, printing progress throughout.
+    Load (or, in a single process, prepare) the initial data and evolve the binary on tiles.
 
     Args:
         num_points: Grid points per dimension
-        output_dir: Directory for the constraint history, Newton residuals and snapshots
+        output_dir: Directory for the initial data, constraint history, strain samples and snapshots
         snapshot_interval: Steps between snapshots; 0 disables snapshots
 
     Returns:
@@ -153,20 +189,21 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    directory = output_dir / "initial_data"
+    if not (directory / "traceless_K.npy").exists():
+        if jax.process_count() > 1:
+            raise SystemExit(f"No initial data in {directory}: run prepare_initial_data({num_points}, "
+                             f"'{output_dir}') as a single task first")
+        prepare_initial_data(num_points, output_dir)
     layout = tile_layout(num_points)
-    if ROOT:
-        print(f"[{num_points}^3] solving Bowen-York initial data ...")
-    dx, initial, residuals = binary_initial_data(num_points)
-    if ROOT:
-        np.savetxt(output_dir / "newton_residual.txt", np.asarray(residuals), header="interior Hamiltonian residual RMS")
+    dx = 2 * HALF_WIDTH / num_points
     num_steps = math.ceil(FINAL_TIME / (CFL * dx))
     x_min = -HALF_WIDTH + dx / 2
     params = BSSNParameters(eta=2.0, kappa=0.002, nu=0.02, g=0.75, dx=dx, dt=FINAL_TIME / num_steps, gauge=1,
                             xl_bc=SOMMERFELD_BC, xr_bc=SOMMERFELD_BC, yl_bc=SOMMERFELD_BC,
                             yr_bc=SOMMERFELD_BC, zl_bc=SOMMERFELD_BC, zr_bc=SOMMERFELD_BC,
                             x_min=x_min, y_min=x_min, z_min=x_min)
-    state = initialize_tiled_bssn(initial, params, layout)  # each device receives only its own tile
-    del initial
+    state = initialize_tiled_bssn(load_initial_data(directory), params, layout)  # each device reads only its tile
     advance = jax.jit(lambda s: tiled_rk4_step(s, params, layout), donate_argnums=0)
     centre, g = num_points // 2, layout.guard_cells
     probes = [(axis, int(f * num_points)) for f in PROBE_FRACTIONS for axis in ("z", "x")]
@@ -295,4 +332,4 @@ if __name__ == "__main__":
     state, dx, history = run_inspiral_merger()
     if ROOT:
         print(f"Final Hamiltonian L2 = {history[-1, 1]:.4e}, momentum L2 = {history[-1, 2]:.4e}")
-        print(f"Saved {OUTPUT_DIR / 'constraint_l2.txt'}, {OUTPUT_DIR / 'newton_residual.txt'} and snapshots in {OUTPUT_DIR}")
+        print(f"Saved {OUTPUT_DIR / 'constraint_l2.txt'}, strain samples and snapshots in {OUTPUT_DIR}")
