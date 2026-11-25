@@ -23,6 +23,7 @@ also imported by inspiral_merger_convergence.py.
 """
 
 import math
+from functools import partial
 import os
 from pathlib import Path
 
@@ -218,7 +219,9 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
                             yr_bc=SOMMERFELD_BC, zl_bc=SOMMERFELD_BC, zr_bc=SOMMERFELD_BC,
                             x_min=x_min, y_min=x_min, z_min=x_min)
     state = initialize_tiled_bssn(load_initial_data(directory), params, layout)  # each device reads only its tile
-    advance = jax.jit(lambda s: tiled_rk4_step(s, params, layout), donate_argnums=0)
+    shardings = jax.tree.map(lambda a: a.sharding, state)  # keep every step's output tiled like the input
+    advance = jax.jit(lambda s: tiled_rk4_step(s, params, layout), in_shardings=(shardings,),
+                      out_shardings=shardings, donate_argnums=0)
     centre, g = num_points // 2, layout.guard_cells
     probes = [(axis, int(f * num_points)) for f in PROBE_FRACTIONS for axis in ("z", "x")]
     points = [(centre, centre, centre + r) if axis == "z" else (centre + r, centre, centre) for axis, r in probes]
@@ -301,7 +304,7 @@ def run_inspiral_merger(num_points=NUM_POINTS, output_dir=OUTPUT_DIR, snapshot_i
         shift = jnp.sqrt(jnp.sum(local.shift**2, axis=0))
         return stats, low(local.conformal_factor), low(local.lapse), jax.lax.pmax(jnp.max(jnp.where(mask, shift, 0.0)), MESH_AXES)
 
-    @jax.jit
+    @partial(jax.jit, in_shardings=(shardings,))
     def diagnostics(state):
         """
         Constraint norms and gauge monitors for the tiled state.
