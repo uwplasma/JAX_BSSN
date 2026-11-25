@@ -5,7 +5,7 @@
 # quasi-circular orbit as the GW run, and writes output/convergence/.
 # Submit from demos/inspiral_merger with: sbatch nersc_convergence_run.sbatch
 #SBATCH -A m4656_g
-#SBATCH -C "gpu&hbm40g"
+#SBATCH -C "gpu&hbm80g"
 #SBATCH -q regular
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=4
@@ -15,6 +15,7 @@
 #SBATCH -o %x-%j.out
 
 module load python
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95  # the 512^3 RK4 step needs ~56 GiB per A100 on 4 nodes
 # demo settings for this run: stop before the merger, same quasi-circular orbit as the GW run
 SETTINGS="import inspiral_merger as b; b.FINAL_TIME = 20.0; b.INFALL_MOMENTUM = 0.0"
 

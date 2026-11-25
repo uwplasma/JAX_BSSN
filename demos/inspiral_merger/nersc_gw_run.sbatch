@@ -5,7 +5,7 @@
 # 25.6 M, t = 150 M), writes everything to output_gw/, then plots the strain with
 # gw_strain_probe.py. Submit from demos/inspiral_merger with: sbatch nersc_gw_run.sbatch
 #SBATCH -A m4656_g
-#SBATCH -C "gpu&hbm40g"
+#SBATCH -C "gpu&hbm80g"
 #SBATCH -q regular
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=4
@@ -15,6 +15,7 @@
 #SBATCH -o %x-%j.out
 
 module load python
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95  # the 512^3 RK4 step needs ~56 GiB per A100 on 4 nodes
 # demo settings for this run: probes in the wave zone, quasi-circular orbit for the analytic (BOB)
 # comparison, inspiral + merger + several ringdown e-folding times, strain sampled every 0.5 M
 SETTINGS="import inspiral_merger as b; b.HALF_WIDTH = 32.0; b.FINAL_TIME = 150.0; b.INFALL_MOMENTUM = 0.0; b.PROBE_INTERVAL = 0.5"
